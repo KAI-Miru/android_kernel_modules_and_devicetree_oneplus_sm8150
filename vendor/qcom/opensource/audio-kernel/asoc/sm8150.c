@@ -7514,6 +7514,40 @@ static const struct of_device_id sm8150_asoc_machine_of_match[]  = {
 	{},
 };
 
+#if defined(OPLUS_ARCH_EXTENDS)
+/*
+ * Production H.40 DTBOs retain the original "oppo" audio properties,
+ * while the published source was changed to "oplus".  Accept both so the
+ * NXP smart-PA feedback link is selected with either device-tree family.
+ */
+static int sm8150_read_speaker_pa(struct device_node *node,
+				  const char **product_name)
+{
+	int ret;
+
+	ret = of_property_read_string(node, "oppo,speaker-pa", product_name);
+	if (ret)
+		ret = of_property_read_string(node, "oplus,speaker-pa",
+					      product_name);
+
+	return ret;
+}
+
+static int sm8150_read_speaker_stereo_mode(struct device_node *node,
+					   u32 *stereo_mode)
+{
+	int ret;
+
+	ret = of_property_read_u32(node, "oppo,speaker-stereo-mode",
+				   stereo_mode);
+	if (ret)
+		ret = of_property_read_u32(node, "oplus,speaker-stereo-mode",
+					   stereo_mode);
+
+	return ret;
+}
+#endif
+
 static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 {
 	struct snd_soc_card *card = NULL;
@@ -7526,8 +7560,6 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 	#if defined(OPLUS_ARCH_EXTENDS)
 	int i;
 	const char *product_name = NULL;
-	const char *oplus_speaker_type = "oplus,speaker-pa";
-	const char *stereo_mode_str = "oplus,speaker-stereo-mode";
 	u32 config_stereo_mode = 0;
 	struct snd_soc_dai_link *temp_link;
 	#endif /* OPLUS_ARCH_EXTENDS */
@@ -7543,7 +7575,7 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 	}
 
 	#if defined(OPLUS_ARCH_EXTENDS)
-	of_property_read_u32(dev->of_node, stereo_mode_str, &config_stereo_mode);
+	sm8150_read_speaker_stereo_mode(dev->of_node, &config_stereo_mode);
 	pr_info("%s config_stereo_mode %d\n", __func__, config_stereo_mode);
 	#endif /* OPLUS_ARCH_EXTENDS */
 
@@ -7665,8 +7697,7 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 			if(extend_i2s_be_dailinks_func){
 				extend_i2s_be_dailinks_func(msm_mi2s_be_dai_links, ARRAY_SIZE(msm_mi2s_be_dai_links));
 			}
-            if (!of_property_read_string(dev->of_node, oplus_speaker_type,
-                    &product_name)) {
+			if (!sm8150_read_speaker_pa(dev->of_node, &product_name)) {
                 pr_info("%s: custom speaker product %s\n", __func__, product_name);
                 for (i = 0; i < ARRAY_SIZE(msm_tavil_fe_dai_links); i++) {
                     temp_link = &msm_tavil_fe_dai_links[i];
@@ -7697,7 +7728,7 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 			total_links += ARRAY_SIZE(msm_auxpcm_be_dai_links);
 		}
 		#ifdef OPLUS_ARCH_EXTENDS
-		if (!of_property_read_string(dev->of_node, oplus_speaker_type, &product_name)) {
+		if (!sm8150_read_speaker_pa(dev->of_node, &product_name)) {
 			#ifdef CONFIG_SND_SOC_MAX98937
 			if (!strcmp(product_name, "maxim")) {
 				memcpy(msm_tavil_dai_links + total_links,
