@@ -495,6 +495,53 @@ static void tp_geture_info_transform(struct gesture_info *gesture, struct resolu
     gesture->Point_4th.y   = gesture->Point_4th.y   * resolution_info->LCD_HEIGHT / (resolution_info->max_y);
 }
 
+/*
+ * The H.40 S6SY761 firmware reports two SingleTap events for DT2W instead of
+ * one native DouTap event.  The shipping H.40 kernel pairs those events in
+ * the common touch driver before reporting the wake key.
+ */
+#define DOUBLE_TAP_MAX_INTERVAL_MS 500
+#define DOUBLE_TAP_MAX_X_DISTANCE  150
+#define DOUBLE_TAP_MAX_Y_DISTANCE  200
+
+static bool single_tap_pending;
+static unsigned long first_tap_jiffies;
+static int first_tap_x;
+static int first_tap_y;
+
+static bool tp_single_tap_to_double_tap(struct gesture_info *gesture)
+{
+    unsigned long interval_ms;
+    int delta_x;
+    int delta_y;
+
+    if (!single_tap_pending) {
+        first_tap_jiffies = jiffies;
+        first_tap_x = gesture->Point_start.x;
+        first_tap_y = gesture->Point_start.y;
+        single_tap_pending = true;
+        TPD_DEBUG("first enter double tap\n");
+        return false;
+    }
+
+    interval_ms = jiffies_to_msecs(jiffies - first_tap_jiffies);
+    delta_x = abs(gesture->Point_start.x - first_tap_x);
+    delta_y = abs(gesture->Point_start.y - first_tap_y);
+
+    if (interval_ms < DOUBLE_TAP_MAX_INTERVAL_MS &&
+        delta_x < DOUBLE_TAP_MAX_X_DISTANCE &&
+        delta_y < DOUBLE_TAP_MAX_Y_DISTANCE) {
+        single_tap_pending = false;
+        return true;
+    }
+
+    TPD_DEBUG("not match double tap\n");
+    first_tap_jiffies = jiffies;
+    first_tap_x = gesture->Point_start.x;
+    first_tap_y = gesture->Point_start.y;
+    return false;
+}
+
 static void tp_gesture_handle(struct touchpanel_data *ts)
 {
     struct gesture_info gesture_info_temp;
@@ -513,6 +560,14 @@ static void tp_gesture_handle(struct touchpanel_data *ts)
 	}
 
     tp_geture_info_transform(&gesture_info_temp, &ts->resolution_info);
+
+    if (ts->single_tap_support &&
+        gesture_info_temp.gesture_type == SingleTap &&
+        tp_single_tap_to_double_tap(&gesture_info_temp)) {
+        gesture_info_temp.gesture_type = DouTap;
+    } else if (gesture_info_temp.gesture_type == DouTap) {
+        single_tap_pending = false;
+    }
 
     TPD_INFO("detect %s gesture\n", gesture_info_temp.gesture_type == DouTap ? "double tap" :
              gesture_info_temp.gesture_type == UpVee ? "up vee" :
@@ -556,9 +611,13 @@ static void tp_gesture_handle(struct touchpanel_data *ts)
         if(ts->geature_ignore)
             return;
 #endif
-        input_report_key(ts->input_dev, KEY_F4, 1);
+        input_report_key(ts->input_dev,
+                         gesture_info_temp.gesture_type == DouTap ? KEY_WAKEUP : KEY_F4,
+                         1);
         input_sync(ts->input_dev);
-        input_report_key(ts->input_dev, KEY_F4, 0);
+        input_report_key(ts->input_dev,
+                         gesture_info_temp.gesture_type == DouTap ? KEY_WAKEUP : KEY_F4,
+                         0);
         input_sync(ts->input_dev);
     } else if (gesture_info_temp.gesture_type == FingerprintDown) {
         ts->fp_info.touch_state = 1;
@@ -6292,6 +6351,7 @@ static int init_input_device(struct touchpanel_data *ts)
     set_bit(BTN_TOUCH, ts->input_dev->keybit);
     if (ts->black_gesture_support) {
         set_bit(KEY_F4, ts->input_dev->keybit);
+        set_bit(KEY_WAKEUP, ts->input_dev->keybit);
 #ifdef CONFIG_OPLUS_TP_APK
         set_bit(KEY_POWER, ts->input_dev->keybit);
 #endif //end of CONFIG_OPLUS_TP_APK
