@@ -119,6 +119,7 @@ static int synaptics_get_vendor(void *chip_data, struct panel_info *panel_data)
 {
         char manu_temp[MAX_DEVICE_MANU_LENGTH] = SYNAPTICS_PREFIX;
         struct chip_data_s3706 *chip_info = (struct chip_data_s3706 *)chip_data;
+        struct touchpanel_data *ts = i2c_get_clientdata(chip_info->client);
 
         chip_info->tp_type = panel_data->tp_type;
         chip_info->p_tp_fw = &panel_data->TP_FW;
@@ -126,6 +127,11 @@ static int synaptics_get_vendor(void *chip_data, struct panel_info *panel_data)
         strncpy(panel_data->manufacture_info.manufacture, manu_temp, MAX_DEVICE_MANU_LENGTH);
         TPD_INFO("chip_info->tp_type = %d, panel_data->test_limit_name = %s, panel_data->fw_name = %s\n",
                 chip_info->tp_type, panel_data->test_limit_name, panel_data->fw_name);
+
+        /* Stock DTBO lacks this newer capability property. */
+        if (ts)
+                ts->black_gesture_indep_support = true;
+
         return 0;
 }
 
@@ -5649,6 +5655,20 @@ static void synaptics_enable_gesture_mask(void *chip_data, uint32_t enable)
         return;
 }
 
+static void synaptics_set_gesture_state(void *chip_data, int state)
+{
+        /*
+         * ColorOS 14 uses double_tap_enable_indep as a logical
+         * gesture-selection mask. The common driver stores the full
+         * value and returns it as hexadecimal. S3706 already enters
+         * broad gesture mode through double_tap_enable, so do not
+         * truncate this userspace mask into an 8-bit register.
+         */
+        (void)chip_data;
+        TPD_DEBUG("%s: independent gesture mask = 0x%x\n",
+                __func__, state);
+}
+
 static int synaptics_set_report_point_first(void *chip_data, uint32_t enable)
 {
         struct chip_data_s3706 *chip_info = (struct chip_data_s3706 *)chip_data;
@@ -5724,6 +5744,7 @@ static struct oplus_touchpanel_operations synaptics_ops = {
         .get_face_state             = synaptics_get_face_state,
         .enable_fingerprint         = synaptics_enable_fingerprint_underscreen,
         .enable_gesture_mask        = synaptics_enable_gesture_mask,
+        .set_gesture_state          = synaptics_set_gesture_state,
         .set_touch_direction        = synaptics_set_touch_direction,
         .get_touch_direction        = synaptics_get_touch_direction,
         .screenon_fingerprint_info  = synaptics_screenon_fingerprint_info,
