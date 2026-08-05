@@ -6811,21 +6811,6 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
                 }
             }
 #endif
-#if defined(VENDOR_EDIT) && defined(CONFIG_TRACEPOINTS)
-            if (trace_ufshcd_command_enabled())
-            {
-                struct request *req = cmd->request;
-                u_int64_t delta_us = ktime_us_delta(lrbp->complete_time_stamp, lrbp->issue_time_stamp);
-
-                if (req && bio_has_data(req->bio) && (delta_us > 5000))
-                {
-                    trace_printk("ufs_io_latency:%06lld us, io_type:%s, LBA:%08x, size:%d\n",
-                            delta_us, (rq_data_dir(req) == READ) ? "R" : "W",
-                            (unsigned int)req->bio->bi_iter.bi_sector,
-                            cmd->sdb.length);
-                }
-            }
-#endif
 			/* Do not touch lrbp after scsi done */
 			cmd->scsi_done(cmd);
 if ((hba->dev_info.quirks & UFS_DEVICE_QUIRK_D1_FFU_RESET) || (hba->dev_info.quirks & UFS_DEVICE_QUIRK_D2_FFU_RESET)) {
