@@ -457,7 +457,7 @@ static void enqueue_reclaim_data(pid_t nr, struct reclaim_info *info)
 		return;
 	if (waken_task->state == TASK_INTERRUPTIBLE)
 		wake_up_process(waken_task);
-	if (nswapdropd->state == TASK_INTERRUPTIBLE)
+	if (nswapdropd && nswapdropd->state == TASK_INTERRUPTIBLE)
 		wake_up_process(nswapdropd);
 }
 
@@ -948,12 +948,17 @@ static int drop_swapcache_pte(pmd_t *pmd, unsigned long start,
 		page = find_get_page(swapper_space, swp_offset(entry));
 		if (!page)
 			continue;
-		put_page(page);
 
-		if (page_count(page) > 1)
+		/* Keep the lookup reference until isolation establishes its own. */
+		if (page_count(page) > 2) {
+			put_page(page);
 			continue;
-		if (isolate_lru_page(page))
+		}
+		if (isolate_lru_page(page)) {
+			put_page(page);
 			continue;
+		}
+		put_page(page);
 
 		/*
 		 * MADV_FREE clears pte dirty bit and then marks the page
@@ -1095,6 +1100,7 @@ static int swapdropd_fn(void *p)
 {
 	struct reclaim_data data;
 	struct task_struct *task;
+	pid_t task_pid;
 	bool retry;
 
 	set_freezable();
@@ -1121,11 +1127,12 @@ static int swapdropd_fn(void *p)
 				msleep(30);
 			} while (nswapind && (nswapind->state == TASK_RUNNING));
 
+			task_pid = task->pid;
 			retry = drop_swapcache_task(task);
 			put_task_struct(task);
 
 			if (retry) {
-				enqueue_reclaim_data(task->pid, &drop_info);
+				enqueue_reclaim_data(task_pid, &drop_info);
 				msleep_interruptible(1000);
 			}
 		}
