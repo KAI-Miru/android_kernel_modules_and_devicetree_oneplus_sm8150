@@ -14,7 +14,7 @@ diff --git a/vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.
 index f971f5d..0000000 100644
 --- a/vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c
 +++ b/vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c
-@@ -445,7 +445,7 @@ static void enqueue_reclaim_data(pid_t nr, struct reclaim_info *info)
+@@ -456,6 +456,6 @@
  	if (!waken_task)
  		return;
  	if (waken_task->state == TASK_INTERRUPTIBLE)
@@ -22,9 +22,7 @@ index f971f5d..0000000 100644
 -	if (nswapdropd->state == TASK_INTERRUPTIBLE)
 +	if (nswapdropd && nswapdropd->state == TASK_INTERRUPTIBLE)
  		wake_up_process(nswapdropd);
- }
- 
-@@ -952,13 +952,19 @@ static int drop_swapcache_pte(pmd_t *pmd, unsigned long start,
+@@ -948,9 +948,19 @@
  		page = find_get_page(swapper_space, swp_offset(entry));
  		if (!page)
  			continue;
@@ -33,7 +31,7 @@ index f971f5d..0000000 100644
 -		if (page_count(page) > 1)
 +		/*
 +		 * Keep the lookup reference until isolate_lru_page() takes its
-+		 * own reference.  With our transient lookup reference held, > 2
++		 * own reference. With our transient lookup reference held, > 2
 +		 * is equivalent to the old post-put page_count(page) > 1 test.
 +		 */
 +		if (page_count(page) > 2) {
@@ -46,22 +44,12 @@ index f971f5d..0000000 100644
  			continue;
 +		}
 +		put_page(page);
- 
- 		/*
- 		 * MADV_FREE clears pte dirty bit and then marks the page
-@@ -1095,6 +1101,7 @@ static int swapdropd_fn(void *p)
- {
+@@ -1096,3 +1106,4 @@
  	struct reclaim_data data;
  	struct task_struct *task;
 +	pid_t task_pid;
  	bool retry;
- 
- 	set_freezable();
-@@ -1119,11 +1126,12 @@ static int swapdropd_fn(void *p)
- 			do {
- 				msleep(30);
- 			} while (nswapind && (nswapind->state == TASK_RUNNING));
- 
+@@ -1124,6 +1135,7 @@
 +			task_pid = task->pid;
  			retry = drop_swapcache_task(task);
  			put_task_struct(task);
@@ -70,7 +58,5 @@ index f971f5d..0000000 100644
 -				enqueue_reclaim_data(task->pid, &drop_info);
 +				enqueue_reclaim_data(task_pid, &drop_info);
  				msleep_interruptible(1000);
- 			}
- 		}
 -- 
 2.43.0
