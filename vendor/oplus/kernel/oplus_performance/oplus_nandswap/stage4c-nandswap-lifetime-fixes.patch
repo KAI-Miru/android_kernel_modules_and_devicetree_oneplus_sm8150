@@ -1,0 +1,76 @@
+From: KAI-Miru <110590275+KAI-Miru@users.noreply.github.com>
+Subject: [PATCH] nandswap: fix object lifetime handling in drop path
+
+Keep the find_get_page() reference until isolate_lru_page() has established
+its own stable reference, avoid reading task->pid after dropping the task
+reference, and tolerate nswapdropd creation failure in the queue wakeup path.
+
+These are correctness-only fixes; reclaim policy and retry limits are unchanged.
+---
+ vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c b/vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c
+index f971f5d..0000000 100644
+--- a/vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c
++++ b/vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c
+@@ -445,7 +445,7 @@ static void enqueue_reclaim_data(pid_t nr, struct reclaim_info *info)
+ 	if (!waken_task)
+ 		return;
+ 	if (waken_task->state == TASK_INTERRUPTIBLE)
+ 		wake_up_process(waken_task);
+-	if (nswapdropd->state == TASK_INTERRUPTIBLE)
++	if (nswapdropd && nswapdropd->state == TASK_INTERRUPTIBLE)
+ 		wake_up_process(nswapdropd);
+ }
+ 
+@@ -952,13 +952,19 @@ static int drop_swapcache_pte(pmd_t *pmd, unsigned long start,
+ 		page = find_get_page(swapper_space, swp_offset(entry));
+ 		if (!page)
+ 			continue;
+-		put_page(page);
+ 
+-		if (page_count(page) > 1)
++		/*
++		 * Keep the lookup reference until isolate_lru_page() takes its
++		 * own reference.  With our transient lookup reference held, > 2
++		 * is equivalent to the old post-put page_count(page) > 1 test.
++		 */
++		if (page_count(page) > 2) {
++			put_page(page);
+ 			continue;
+-		if (isolate_lru_page(page))
++		}
++		if (isolate_lru_page(page)) {
++			put_page(page);
+ 			continue;
++		}
++		put_page(page);
+ 
+ 		/*
+ 		 * MADV_FREE clears pte dirty bit and then marks the page
+@@ -1095,6 +1101,7 @@ static int swapdropd_fn(void *p)
+ {
+ 	struct reclaim_data data;
+ 	struct task_struct *task;
++	pid_t task_pid;
+ 	bool retry;
+ 
+ 	set_freezable();
+@@ -1119,11 +1126,12 @@ static int swapdropd_fn(void *p)
+ 			do {
+ 				msleep(30);
+ 			} while (nswapind && (nswapind->state == TASK_RUNNING));
+ 
++			task_pid = task->pid;
+ 			retry = drop_swapcache_task(task);
+ 			put_task_struct(task);
+ 
+ 			if (retry) {
+-				enqueue_reclaim_data(task->pid, &drop_info);
++				enqueue_reclaim_data(task_pid, &drop_info);
+ 				msleep_interruptible(1000);
+ 			}
+ 		}
+-- 
+2.43.0
