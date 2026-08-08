@@ -1,0 +1,82 @@
+name: Stage 4C source edit
+
+on:
+  push:
+    branches:
+      - miru-h40-mem-stage4c-nandswap-fix
+    paths:
+      - '.github/workflows/stage4c-source-edit.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: miru-h40-mem-stage4c-nandswap-fix
+          fetch-depth: 1
+
+      - name: Commit Stage 4C fixes directly
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('vendor/oplus/kernel/oplus_performance/oplus_nandswap/nandswap_core.c')
+          text = path.read_text()
+
+          replacements = [
+              (
+                  '''\tif (nswapdropd->state == TASK_INTERRUPTIBLE)\n\t\twake_up_process(nswapdropd);''',
+                  '''\tif (nswapdropd && nswapdropd->state == TASK_INTERRUPTIBLE)\n\t\twake_up_process(nswapdropd);'''
+              ),
+              (
+                  '''\t\tpage = find_get_page(swapper_space, swp_offset(entry));\n\t\tif (!page)\n\t\t\tcontinue;\n\t\tput_page(page);\n\n\t\tif (page_count(page) > 1)\n\t\t\tcontinue;\n\t\tif (isolate_lru_page(page))\n\t\t\tcontinue;''',
+                  '''\t\tpage = find_get_page(swapper_space, swp_offset(entry));\n\t\tif (!page)\n\t\t\tcontinue;\n\n\t\t/* Keep the lookup reference until isolation establishes its own. */\n\t\tif (page_count(page) > 2) {\n\t\t\tput_page(page);\n\t\t\tcontinue;\n\t\t}\n\t\tif (isolate_lru_page(page)) {\n\t\t\tput_page(page);\n\t\t\tcontinue;\n\t\t}\n\t\tput_page(page);'''
+              ),
+              (
+                  '''static int swapdropd_fn(void *p)\n{\n\tstruct reclaim_data data;\n\tstruct task_struct *task;\n\tbool retry;''',
+                  '''static int swapdropd_fn(void *p)\n{\n\tstruct reclaim_data data;\n\tstruct task_struct *task;\n\tpid_t task_pid;\n\tbool retry;'''
+              ),
+              (
+                  '''\t\t\tretry = drop_swapcache_task(task);\n\t\t\tput_task_struct(task);\n\n\t\t\tif (retry) {\n\t\t\t\tenqueue_reclaim_data(task->pid, &drop_info);''',
+                  '''\t\t\ttask_pid = task->pid;\n\t\t\tretry = drop_swapcache_task(task);\n\t\t\tput_task_struct(task);\n\n\t\t\tif (retry) {\n\t\t\t\tenqueue_reclaim_data(task_pid, &drop_info);'''
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one Stage 4C anchor, found {count}: {old[:60]!r}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+
+          final = path.read_text()
+          for token in (
+              'if (nswapdropd && nswapdropd->state == TASK_INTERRUPTIBLE)',
+              'if (page_count(page) > 2)',
+              'pid_t task_pid;',
+              'enqueue_reclaim_data(task_pid, &drop_info);',
+          ):
+              if final.count(token) != 1:
+                  raise SystemExit(f'final Stage 4C token count for {token!r}={final.count(token)}')
+
+          patch = Path('vendor/oplus/kernel/oplus_performance/oplus_nandswap/stage4c-nandswap-lifetime-fixes.patch')
+          if patch.exists():
+              patch.unlink()
+
+          workflow = Path('.github/workflows/stage4c-source-edit.yml')
+          workflow.unlink()
+          PY
+
+          git diff --check
+          git config user.name 'KAI-Miru'
+          git config user.email '110590275+KAI-Miru@users.noreply.github.com'
+          git add -A
+          git commit -m 'nandswap: fix Stage 4C object lifetime handling'
+          git push origin HEAD:miru-h40-mem-stage4c-nandswap-fix
