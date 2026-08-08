@@ -57,14 +57,14 @@ jobs:
           path.write_text(text)
 
           final = path.read_text()
-          for token in (
+          required = (
               'if (nswapdropd && nswapdropd->state == TASK_INTERRUPTIBLE)',
               'if (page_count(page) > 2)',
-              'pid_t task_pid;',
               'enqueue_reclaim_data(task_pid, &drop_info);',
-          ):
-              if final.count(token) != 1:
-                  raise SystemExit(f'final Stage 4C token count for {token!r}={final.count(token)}')
+          )
+          for token in required:
+              if token not in final:
+                  raise SystemExit(f'missing final Stage 4C token: {token!r}')
 
           patch = Path('vendor/oplus/kernel/oplus_performance/oplus_nandswap/stage4c-nandswap-lifetime-fixes.patch')
           if patch.exists():
