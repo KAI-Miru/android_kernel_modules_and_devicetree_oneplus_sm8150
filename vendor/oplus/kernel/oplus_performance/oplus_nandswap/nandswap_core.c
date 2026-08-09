@@ -702,9 +702,6 @@ cont:
 			continue;
 		*/
 
-		if (isolate_lru_page(page))
-			continue;
-
 		if (PageActive(page)) {
 			rp->nr_act++;
 			if (reclaim_type == NS_TYPE_NAND_ACT)
@@ -712,6 +709,9 @@ cont:
 		} else {
 			rp->nr_inact++;
 		}
+
+		if (isolate_lru_page(page))
+			continue;
 
 		/*
 		 * MADV_FREE clears pte dirty bit and then marks the page
