@@ -270,36 +270,12 @@ out:
 	return ntask;
 }
 
-#ifdef CONFIG_OPLUS_FEATURE_OF2FS
-extern block_t of2fs_seg_freefrag(struct f2fs_sb_info *sbi, unsigned int segno,
-				  block_t* blocks, unsigned int n);
-static inline unsigned int f2fs_frag_score(struct super_block *sb)
-{
-	struct f2fs_sb_info *sbi = F2FS_SB(sb);
-	unsigned int i, total_segs =
-			le32_to_cpu(sbi->raw_super->segment_count_main);
-	block_t blocks[9], total_blocks = 0;
-	memset(blocks, 0, sizeof(blocks));
-	for (i = 0; i < total_segs; i++) {
-		total_blocks += of2fs_seg_freefrag(sbi, i,
-			blocks, ARRAY_SIZE(blocks));
-		cond_resched();
-	}
-	return total_blocks ? (blocks[0] + blocks[1]) * 100ULL / total_blocks : 0;
-}
-
-static inline unsigned int f2fs_undiscard_score(struct super_block *sb)
-{
-	struct f2fs_sb_info *sbi = F2FS_SB(sb);
-	unsigned int undiscard_blks = 0;
-	unsigned int score;
-	unsigned int free_blks = sbi->user_block_count - valid_user_blocks(sbi);
-	if (SM_I(sbi) && SM_I(sbi)->dcc_info)
-		undiscard_blks = SM_I(sbi)->dcc_info->undiscard_blks;
-	score = free_blks ? undiscard_blks * 100ULL / free_blks : 0;
-	return score;
-}
-#endif
+/*
+ * Later OnePlus NANDSwap revisions disabled F2FS fragmentation and
+ * undiscard scoring. The old fragmentation path scans every main segment
+ * and can run from normal NANDSwap policy updates, so keep it out of the
+ * runtime path while retaining capacity, quota and device-life protection.
+ */
 
 static void ns_life_protect_update(void)
 {
@@ -348,15 +324,7 @@ static inline void ns_data_check(void)
 		}
 	nsi.data_avail = st.f_bavail;
 
-#ifdef CONFIG_OPLUS_FEATURE_OF2FS
-	if (kpath.dentry->d_sb->s_magic == F2FS_SUPER_MAGIC) {
-		nsi.frag_score = f2fs_frag_score(kpath.dentry->d_sb);
-		nsi.undiscard_score = f2fs_undiscard_score(kpath.dentry->d_sb);
-	}
-	else
-		goto out;
-#endif
-
+	/* F2FS fragmentation/undiscard scoring intentionally disabled. */
 out:
 	return;
 }
