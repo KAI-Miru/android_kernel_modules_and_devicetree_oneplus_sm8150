@@ -31,6 +31,7 @@
 #include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
+#include <linux/wait.h>
 #include <linux/memcontrol.h>
 #include <linux/delayacct.h>
 #include <linux/sysctl.h>
@@ -192,6 +193,11 @@ static struct reclaim_info out_info = { {{0}}, 0, 0, 0 };
 static struct reclaim_info drop_info = { {{0}}, 0, 0, 0 };
 static struct reclaim_info in_info = { {{0}}, 0, 0, 0 };
 static DEFINE_SPINLOCK(rd_lock);
+static DECLARE_WAIT_QUEUE_HEAD(out_wait);
+static DECLARE_WAIT_QUEUE_HEAD(drop_wait);
+static DECLARE_WAIT_QUEUE_HEAD(in_wait);
+static DECLARE_RWSEM(nandswap_op_sem);
+static bool nandswap_stopping;
 
 bool nandswap_enable __read_mostly = false;
 extern int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
@@ -374,9 +380,12 @@ static void ns_life_ctrl_work(struct work_struct *work)
 
 static void ns_life_ctrl_timer(struct timer_list *t)
 {
+	if (READ_ONCE(nandswap_stopping))
+		return;
+
 	schedule_work(&nsi.work);
-	nsi.timer.expires = jiffies + NS_CHECK_INTERVAL * HZ;
-	add_timer(&nsi.timer);
+	if (!READ_ONCE(nandswap_stopping))
+		mod_timer(&nsi.timer, jiffies + NS_CHECK_INTERVAL * HZ);
 }
 
 static inline void ns_life_ctrl_init(void)
@@ -384,6 +393,7 @@ static inline void ns_life_ctrl_init(void)
 	unsigned long events[NR_VM_EVENT_ITEMS];
 	struct timespec64 ts;
 
+	WRITE_ONCE(nandswap_stopping, false);
 	memset(&nsi, 0, sizeof(nsi));
 	nsi.life_protect = false;
 #if defined(OPLUS_AGING_TEST)
@@ -407,27 +417,52 @@ static inline void ns_life_ctrl_init(void)
 	return;
 }
 
+static void ns_life_ctrl_stop(void)
+{
+	WRITE_ONCE(nandswap_stopping, true);
+	del_timer_sync(&nsi.timer);
+	cancel_work_sync(&nsi.work);
+}
+
+static bool reclaim_data_pending(struct reclaim_info *info)
+{
+	bool pending;
+
+	spin_lock(&rd_lock);
+	pending = info->count > 0;
+	spin_unlock(&rd_lock);
+
+	return pending;
+}
+
 static void enqueue_reclaim_data(pid_t nr, struct reclaim_info *info)
 {
 	int idx;
-	struct task_struct *waken_task;
+	bool queued = false;
 
 	spin_lock(&rd_lock);
 	if (info->count < RD_SIZE) {
 		info->count++;
 		idx = info->i_idx++ % RD_SIZE;
 		info->rd[idx].pid = nr;
+		queued = true;
 	}
 	spin_unlock(&rd_lock);
 	WARN_ON(info->count > RD_SIZE || info->count < 0);
 
-	waken_task = (info == &out_info? nswapoutd : nswapind);
-	if (!waken_task)
+	if (!queued)
 		return;
-	if (waken_task->state == TASK_INTERRUPTIBLE)
-		wake_up_process(waken_task);
-	if (nswapdropd && nswapdropd->state == TASK_INTERRUPTIBLE)
-		wake_up_process(nswapdropd);
+
+	if (info == &out_info) {
+		if (nswapoutd)
+			wake_up(&out_wait);
+	} else if (info == &drop_info) {
+		if (nswapdropd)
+			wake_up(&drop_wait);
+	} else if (info == &in_info) {
+		if (nswapind)
+			wake_up(&in_wait);
+	}
 }
 
 static bool dequeue_reclaim_data(struct reclaim_data *data, struct reclaim_info *info)
@@ -605,16 +640,21 @@ static int swapind_fn(void *p)
 
 	set_freezable();
 	for ( ; ; ) {
-		while (!pm_freezing && dequeue_reclaim_data(&data, &in_info)) {
+		wait_event_freezable(in_wait,
+			kthread_should_stop() || reclaim_data_pending(&in_info));
+		if (kthread_should_stop())
+			break;
+		if (try_to_freeze())
+			continue;
+
+		while (!kthread_should_stop()) {
+			if (try_to_freeze())
+				break;
+			if (!dequeue_reclaim_data(&data, &in_info))
+				break;
+
 			rcu_read_lock();
 			task = find_task_by_vpid(data.pid);
-
-			/* KTHREAD is almost impossible to hit this */
-			//if (task->flags & PF_KTHREAD) {
-			//	rcu_read_unlock();
-			//	continue;
-			//}
-
 			if (!task) {
 				rcu_read_unlock();
 				continue;
@@ -622,15 +662,12 @@ static int swapind_fn(void *p)
 
 			get_task_struct(task);
 			rcu_read_unlock();
+
+			down_write(&nandswap_op_sem);
 			swapin_anon(task);
+			up_write(&nandswap_op_sem);
 			put_task_struct(task);
 		}
-
-		set_current_state(TASK_INTERRUPTIBLE);
-		freezable_schedule();
-
-		if (kthread_should_stop())
-			break;
 	}
 
 	return 0;
@@ -845,16 +882,21 @@ static int swapoutd_fn(void *p)
 
 	set_freezable();
 	for ( ; ; ) {
-		while (!pm_freezing && dequeue_reclaim_data(&data, &out_info)) {
+		wait_event_freezable(out_wait,
+			kthread_should_stop() || reclaim_data_pending(&out_info));
+		if (kthread_should_stop())
+			break;
+		if (try_to_freeze())
+			continue;
+
+		while (!kthread_should_stop()) {
+			if (try_to_freeze())
+				break;
+			if (!dequeue_reclaim_data(&data, &out_info))
+				break;
+
 			rcu_read_lock();
 			task = find_task_by_vpid(data.pid);
-
-			/* KTHREAD is almost impossible to hit this */
-			//if (task->flags & PF_KTHREAD) {
-			//	rcu_read_unlock();
-			//	continue;
-			//}
-
 			if (!task) {
 				rcu_read_unlock();
 				continue;
@@ -863,21 +905,16 @@ static int swapoutd_fn(void *p)
 			get_task_struct(task);
 			rcu_read_unlock();
 
-			do {
-				msleep(30);
-			} while (nswapind && (nswapind->state == TASK_RUNNING));
-
+			down_read(&nandswap_op_sem);
 			reclaim_anon(task);
-			enqueue_reclaim_data(task->pid, &drop_info);
+			up_read(&nandswap_op_sem);
+
+			if (!kthread_should_stop())
+				enqueue_reclaim_data(task->pid, &drop_info);
 			put_task_struct(task);
 		}
 
 		ns_life_ctrl_update(false);
-		set_current_state(TASK_INTERRUPTIBLE);
-		freezable_schedule();
-
-		if (kthread_should_stop())
-			break;
 	}
 
 	return 0;
@@ -1074,16 +1111,21 @@ static int swapdropd_fn(void *p)
 
 	set_freezable();
 	for ( ; ; ) {
-		while (!pm_freezing && dequeue_reclaim_data(&data, &drop_info)) {
+		wait_event_freezable(drop_wait,
+			kthread_should_stop() || reclaim_data_pending(&drop_info));
+		if (kthread_should_stop())
+			break;
+		if (try_to_freeze())
+			continue;
+
+		while (!kthread_should_stop()) {
+			if (try_to_freeze())
+				break;
+			if (!dequeue_reclaim_data(&data, &drop_info))
+				break;
+
 			rcu_read_lock();
 			task = find_task_by_vpid(data.pid);
-
-			/* KTHREAD is almost impossible to hit this */
-			//if (task->flags & PF_KTHREAD) {
-			//	rcu_read_unlock();
-			//	continue;
-			//}
-
 			if (!task) {
 				rcu_read_unlock();
 				continue;
@@ -1092,25 +1134,17 @@ static int swapdropd_fn(void *p)
 			get_task_struct(task);
 			rcu_read_unlock();
 
-			do {
-				msleep(30);
-			} while (nswapind && (nswapind->state == TASK_RUNNING));
-
 			task_pid = task->pid;
+			down_read(&nandswap_op_sem);
 			retry = drop_swapcache_task(task);
+			up_read(&nandswap_op_sem);
 			put_task_struct(task);
 
-			if (retry) {
+			if (retry && !kthread_should_stop()) {
 				enqueue_reclaim_data(task_pid, &drop_info);
-				msleep_interruptible(1000);
+				freezable_schedule_timeout_interruptible(HZ);
 			}
 		}
-
-		set_current_state(TASK_INTERRUPTIBLE);
-		freezable_schedule();
-
-		if (kthread_should_stop())
-			break;
 	}
 
 	return 0;
@@ -1293,8 +1327,11 @@ static ssize_t swap_ctl_write(struct file *filp, const char __user *ubuf,
 		ns_state_check(task->signal->oom_score_adj, task, type);
 	else if (type == NS_TYPE_DROP) {
 		nand_type = nandswap_type();
-		if (nand_type < MAX_SWAPFILES)
+		if (nand_type < MAX_SWAPFILES) {
+			down_read(&nandswap_op_sem);
 			drop_swapcache_task(task);
+			up_read(&nandswap_op_sem);
+		}
 	} else if (type == NS_TYPE_RATIO) {
 		nand_type = nandswap_type();
 		if (nand_type < MAX_SWAPFILES) {
@@ -1590,8 +1627,9 @@ static int __init nandswap_init(void)
 static void __exit nandswap_exit(void)
 {
 	ns_remove_proc_dir();
-	profile_event_unregister(PROFILE_TASK_EXIT, &process_notifier_block);
+	ns_life_ctrl_stop();
 	nandswap_stop();
+	profile_event_unregister(PROFILE_TASK_EXIT, &process_notifier_block);
 }
 
 module_init(nandswap_init);
