@@ -79,6 +79,31 @@ enum ANMATION_TYPE
         BACKUP,
 	SYSTEMUI_SPLIT_STARTM,
 };
+/*
+ * Android 14 ColorOS sched_assist ABI. Keep the donor numeric values stable:
+ * userspace sends these integers through /proc/oplus_scheduler/sched_assist/im_flag.
+ */
+enum IM_FLAG_TYPE {
+	IM_FLAG_NONE = 0,
+	IM_FLAG_SURFACEFLINGER,
+	IM_FLAG_HWC,
+	IM_FLAG_RENDERENGINE,
+	IM_FLAG_WEBVIEW,
+	IM_FLAG_CAMERA_HAL,
+	IM_FLAG_AUDIO,
+	IM_FLAG_HWBINDER,
+	IM_FLAG_LAUNCHER,
+	IM_FLAG_LAUNCHER_NON_UX_RENDER,
+	IM_FLAG_SS_LOCK_OWNER,
+	IM_FLAG_CAMERA_SERVER,
+	IM_FLAG_SYSTEMSERVER_PID,
+	IM_FLAG_FORBID_SET_CPU_AFFINITY_IN_KERNEL,
+	IM_FLAG_MIDASD,
+	MAX_IM_FLAG_TYPE,
+	/* Android's TpdManager ABI: intentionally aliases CAMERA_SERVER. */
+	IM_FLAG_FORBID_SET_CPU_AFFINITY = 11,
+};
+
 struct ux_sched_cluster {
         struct cpumask cpus;
         unsigned long capacity;
