@@ -7,8 +7,6 @@
  * importing invasive scheduler instrumentation. It owns all accepted control
  * state and performs the requested delayed sampling work.
  */
-#include <linux/cpufreq.h>
-#include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -144,13 +142,9 @@ static ssize_t proc_clm_mux_switch_write(struct file *file,
 		index = __ffs(function_bits);
 		if (index < MAX_SWITCH_NUM) {
 			control_array[index] = state & 1;
-			if (index == ACTIVE_GRAB_BIT) {
-				if (control_array[index])
-					schedule_delayed_work(&grab_hotthread_work,
-						usecs_to_jiffies(ACTIVE_GRABTHREAD_DURATION));
-				else
-					cancel_delayed_work(&grab_hotthread_work);
-			}
+			if (index == ACTIVE_GRAB_BIT && control_array[index])
+				schedule_delayed_work(&grab_hotthread_work,
+					usecs_to_jiffies(ACTIVE_GRABTHREAD_DURATION));
 			/*
 			 * OP9R's bit 3 sends a cpuset notification through its
 			 * additional netlink subsystem. H.40 retains the state;
@@ -161,6 +155,9 @@ static ssize_t proc_clm_mux_switch_write(struct file *file,
 		}
 	}
 	mutex_unlock(&clm_lock);
+	if (function_bits && !(function_bits & (function_bits - 1)) &&
+		index == ACTIVE_GRAB_BIT && !(state & 1))
+		cancel_delayed_work_sync(&grab_hotthread_work);
 	return count;
 }
 
