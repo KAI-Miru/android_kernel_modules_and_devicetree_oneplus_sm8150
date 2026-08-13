@@ -29,8 +29,12 @@ enum freq_update_flags {
 #define FRAME_ZONE       (1 << 0)
 #define USER_ZONE        (1 << 1)
 
-#define SCHED_CPUFREQ_DEF_FRAMEBOOST    (1U << 6)
-#define SCHED_CPUFREQ_SF_FRAMEBOOST     (1U << 7)
+/*
+ * H.40 reserves bits 6-9 for WALT early detection, force updates,
+ * continuation and scheduler-assist boosts.  Keep Frame Boost distinct.
+ */
+#define SCHED_CPUFREQ_DEF_FRAMEBOOST    (1U << 10)
+#define SCHED_CPUFREQ_SF_FRAMEBOOST     (1U << 11)
 
 struct oplus_sched_cluster {
 	struct list_head	list;
