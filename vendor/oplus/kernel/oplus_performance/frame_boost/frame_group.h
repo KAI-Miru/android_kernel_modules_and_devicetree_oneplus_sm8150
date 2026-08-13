@@ -6,6 +6,7 @@
 #ifndef _FRAME_GROUP_H
 #define _FRAME_GROUP_H
 #include <linux/cpufreq.h>
+#include <linux/version.h>
 
 /* Only opaque scheduler types are exposed here; sched.h has no include guard on H.40. */
 struct rq;
