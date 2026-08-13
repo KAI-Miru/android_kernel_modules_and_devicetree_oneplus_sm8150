@@ -130,6 +130,24 @@ static long ofb_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return ret;
 }
 
+/*
+ * Decode the extra ioctl payload before changing a task's preferred
+ * Frame Boost cluster.  The reference tree declares the low-level setter
+ * but leaves this userspace-facing bridge out of its unlinked ioctl object.
+ */
+static long fbg_set_task_preferred_cluster(void __user *uarg)
+{
+	struct ofb_ctrl_cluster info;
+
+	if (!uarg)
+		return -EINVAL;
+
+	if (copy_from_user(&info, uarg, sizeof(info)))
+		return -EFAULT;
+
+	return __fbg_set_task_preferred_cluster(info.tid, info.cluster_id);
+}
+
 static long fbg_add_task_to_group(void __user *uarg)
 {
 	struct ofb_key_thread_info info;
