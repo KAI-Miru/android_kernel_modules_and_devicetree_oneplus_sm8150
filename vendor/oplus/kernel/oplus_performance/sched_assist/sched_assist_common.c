@@ -1541,8 +1541,11 @@ static ssize_t proc_sched_impt_task_read(struct file *file,
 
 static void sched_assist_set_im_flag(struct task_struct *task, int im_flag)
 {
+	/* The SM8250 donor accepts the stable integer ABI without clamping it. */
 	task_lock(task);
 	task->ux_im_flag = im_flag;
+	if (im_flag == IM_FLAG_LAUNCHER_NON_UX_RENDER)
+		task->ux_state |= SA_TYPE_HEAVY;
 	task_unlock(task);
 }
 
