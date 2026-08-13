@@ -333,7 +333,8 @@ void oplus_sched_assist_audio_perf_addIm(struct task_struct *task, int im_flag)
 	if (!audio_perf_enabled())
 		return;
 
-	if (task_is_audio(task) && im_flag != IM_FLAG_AUDIO)
+	/* Match the donor: only an explicit IM_FLAG_NONE clears audio UX. */
+	if (task_is_audio(task) && im_flag == IM_FLAG_NONE)
 		set_audio_sched_boost_locked(task, false);
 	else if (im_flag == IM_FLAG_AUDIO)
 		set_audio_sched_boost_locked(task, true);
