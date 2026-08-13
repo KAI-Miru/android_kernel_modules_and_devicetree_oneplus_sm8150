@@ -20,6 +20,16 @@ static DEFINE_RAW_SPINLOCK(preferred_cluster_id_lock);
  */
 static atomic_t user_interested_tgid = ATOMIC_INIT(-1);
 
+/*
+ * H.40 predates available_idle_cpu().  On this physical SM8150 target there
+ * is no vCPU-preemption state to exclude, so idle_cpu() is the equivalent
+ * placement predicate.
+ */
+static inline bool fbg_available_idle_cpu(int cpu)
+{
+	return idle_cpu(cpu);
+}
+
 int __fbg_set_task_preferred_cluster(pid_t tid, int cluster_id)
 {
 	struct task_struct * task = NULL;
@@ -82,7 +92,7 @@ bool fbg_cluster_boost(struct task_struct *p, int *target_cpu)
 		if (active_cpu == -1)
 			active_cpu = iter_cpu;
 
-		if (available_idle_cpu(iter_cpu) || (iter_cpu == task_cpu(p) &&
+		if (fbg_available_idle_cpu(iter_cpu) || (iter_cpu == task_cpu(p) &&
 			p->state == TASK_RUNNING)) {
 			max_spare_cap_cpu = iter_cpu;
 			break;
@@ -100,7 +110,7 @@ bool fbg_cluster_boost(struct task_struct *p, int *target_cpu)
 
 	if ((max_spare_cap_cpu == -1)
 		|| ((cpumask_weight(&search_cpus) == 1) &&
-		(!available_idle_cpu(max_spare_cap_cpu)))) {
+		(!fbg_available_idle_cpu(max_spare_cap_cpu)))) {
 		return false;
 	}
 
