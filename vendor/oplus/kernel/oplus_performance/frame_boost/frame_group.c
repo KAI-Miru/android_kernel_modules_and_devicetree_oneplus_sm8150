@@ -32,9 +32,7 @@ extern int sysctl_input_boost_enabled;
 #include "frame_debug.h"
 
 #ifdef CONFIG_OPLUS_FEATURE_VT_CAP
-#ifdef CONFIG_OPLUS_FEATURE_VT_CAP
 #include <linux/sched_assist/eas_opt/oplus_cap.h>
-#endif
 #endif
 
 #define NONE_FRAME_TASK      (0)
