@@ -1438,3 +1438,289 @@ void cgroup_set_sched_assist_boost_task(struct task_struct *p)
 		return;
 	}
 }
+
+
+/*
+ * Android 14 sched_assist proc ABI. The state is functional: classifications
+ * are stored in task->ux_im_flag and read back from the target task.
+ */
+#define OPLUS_SCHEDULER_PROC_DIR "oplus_scheduler"
+#define OPLUS_SCHEDASSIST_PROC_DIR "sched_assist"
+#define SCHED_ASSIST_PROC_MAX_SET 128
+
+static struct proc_dir_entry *d_oplus_scheduler;
+static struct proc_dir_entry *d_sched_assist;
+static pid_t global_im_flag_pid = -1;
+static DEFINE_MUTEX(sched_assist_proc_lock);
+
+static ssize_t proc_debug_enabled_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	char buffer[16];
+	int val;
+	int err;
+
+	if (count >= sizeof(buffer))
+		return -E2BIG;
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+	buffer[count] = '\0';
+	err = kstrtoint(strstrip(buffer), 10, &val);
+	if (err)
+		return err;
+	WRITE_ONCE(global_debug_enabled, val);
+	return count;
+}
+
+static ssize_t proc_debug_enabled_read(struct file *file,
+		char __user *buf, size_t count, loff_t *ppos)
+{
+	char buffer[32];
+	size_t len = scnprintf(buffer, sizeof(buffer), "debug_enabled=%d\n",
+			READ_ONCE(global_debug_enabled));
+
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t proc_sched_impt_task_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	char buffer[64];
+	char args[2][16];
+	char *str;
+	char *token;
+	int cnt = 0;
+	int pid;
+	int err;
+
+	if (count >= sizeof(buffer))
+		return -E2BIG;
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+	buffer[count] = '\0';
+
+	str = strstrip(buffer);
+	while ((token = strsep(&str, " ")) && *token && cnt < 2) {
+		strlcpy(args[cnt], token, sizeof(args[cnt]));
+		cnt++;
+	}
+	if (cnt != 2)
+		return -EINVAL;
+	err = kstrtoint(strstrip(args[1]), 0, &pid);
+	if (err)
+		return err;
+	if (pid < 0 || pid > PID_MAX_DEFAULT)
+		return -EINVAL;
+
+	mutex_lock(&sched_assist_proc_lock);
+	if (!strncmp(args[0], "fg", 2)) {
+		save_top_app_tgid = pid;
+		top_app_type = !strncmp(args[0], "fgLauncher", 10);
+	} else if (!strncmp(args[0], "au", 2)) {
+		save_audio_tgid = pid;
+	} else {
+		mutex_unlock(&sched_assist_proc_lock);
+		return -EINVAL;
+	}
+	mutex_unlock(&sched_assist_proc_lock);
+	return count;
+}
+
+static ssize_t proc_sched_impt_task_read(struct file *file,
+		char __user *buf, size_t count, loff_t *ppos)
+{
+	char buffer[64];
+	size_t len;
+
+	mutex_lock(&sched_assist_proc_lock);
+	len = scnprintf(buffer, sizeof(buffer), "top(%d %u) au(%d)\n",
+			save_top_app_tgid, top_app_type, save_audio_tgid);
+	mutex_unlock(&sched_assist_proc_lock);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static void sched_assist_set_im_flag(struct task_struct *task, int im_flag)
+{
+	task_lock(task);
+	task->ux_im_flag = im_flag;
+	task_unlock(task);
+}
+
+static ssize_t proc_im_flag_write_common(const char __user *buf, size_t count,
+		bool app_only)
+{
+	char buffer[SCHED_ASSIST_PROC_MAX_SET];
+	char args[3][16];
+	char *str;
+	char *token;
+	struct task_struct *task = NULL;
+	int cnt = 0;
+	int pid;
+	int im_flag;
+	int err;
+
+	if (count >= sizeof(buffer))
+		return -E2BIG;
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+	buffer[count] = '\0';
+
+	str = strstrip(buffer);
+	while ((token = strsep(&str, " ")) && *token && cnt < 3) {
+		strlcpy(args[cnt], token, sizeof(args[cnt]));
+		cnt++;
+	}
+	if (cnt == 2 && !strncmp(args[0], "r", 1)) {
+		err = kstrtoint(strstrip(args[1]), 10, &pid);
+		if (err)
+			return err;
+		if (pid > 0 && pid <= PID_MAX_DEFAULT)
+			WRITE_ONCE(global_im_flag_pid, pid);
+		return count;
+	}
+	if (cnt != 3 || strncmp(args[0], "p", 1))
+		return -EINVAL;
+	err = kstrtoint(strstrip(args[1]), 10, &pid);
+	if (err)
+		return err;
+	err = kstrtoint(strstrip(args[2]), 10, &im_flag);
+	if (err)
+		return err;
+	if (pid <= 0 || pid > PID_MAX_DEFAULT)
+		return -EINVAL;
+
+	rcu_read_lock();
+	task = find_task_by_vpid(pid);
+	if (task && (!app_only || task->tgid == current->tgid))
+		get_task_struct(task);
+	else
+		task = NULL;
+	rcu_read_unlock();
+	if (!task)
+		return app_only ? -EPERM : -ESRCH;
+
+	sched_assist_set_im_flag(task, im_flag);
+	put_task_struct(task);
+	return count;
+}
+
+static ssize_t proc_im_flag_read_common(char __user *buf, size_t count,
+		loff_t *ppos, bool app_only)
+{
+	char buffer[256];
+	struct task_struct *task;
+	size_t len;
+	pid_t pid = READ_ONCE(global_im_flag_pid);
+
+	rcu_read_lock();
+	task = find_task_by_vpid(pid);
+	if (task && (!app_only || task->tgid == current->tgid))
+		get_task_struct(task);
+	else
+		task = NULL;
+	rcu_read_unlock();
+	if (!task) {
+		len = scnprintf(buffer, sizeof(buffer), "Can not find task\n");
+		return simple_read_from_buffer(buf, count, ppos, buffer, len);
+	}
+
+	task_lock(task);
+	len = scnprintf(buffer, sizeof(buffer),
+			app_only ? "comm=%s pid=%d tgid=%d im_flag=%d\n" :
+			"comm=%s pid=%d tgid=%d ux_im_flag=%d\n",
+			task->comm, task->pid, task->tgid, task->ux_im_flag);
+	task_unlock(task);
+	put_task_struct(task);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t proc_im_flag_write(struct file *file, const char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	return proc_im_flag_write_common(buf, count, false);
+}
+
+static ssize_t proc_im_flag_read(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	return proc_im_flag_read_common(buf, count, ppos, false);
+}
+
+static ssize_t proc_im_flag_app_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	return proc_im_flag_write_common(buf, count, true);
+}
+
+static ssize_t proc_im_flag_app_read(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	return proc_im_flag_read_common(buf, count, ppos, true);
+}
+
+static const struct file_operations proc_debug_enabled_fops = {
+	.read = proc_debug_enabled_read,
+	.write = proc_debug_enabled_write,
+	.llseek = default_llseek,
+};
+
+static const struct file_operations proc_sched_impt_task_fops = {
+	.read = proc_sched_impt_task_read,
+	.write = proc_sched_impt_task_write,
+	.llseek = default_llseek,
+};
+
+static const struct file_operations proc_im_flag_fops = {
+	.read = proc_im_flag_read,
+	.write = proc_im_flag_write,
+	.llseek = default_llseek,
+};
+
+static const struct file_operations proc_im_flag_app_fops = {
+	.read = proc_im_flag_app_read,
+	.write = proc_im_flag_app_write,
+	.llseek = default_llseek,
+};
+
+static int __init oplus_sched_assist_proc_init(void)
+{
+	struct proc_dir_entry *entry;
+
+	d_oplus_scheduler = proc_mkdir(OPLUS_SCHEDULER_PROC_DIR, NULL);
+	if (!d_oplus_scheduler)
+		return -ENOMEM;
+	d_sched_assist = proc_mkdir(OPLUS_SCHEDASSIST_PROC_DIR,
+			d_oplus_scheduler);
+	if (!d_sched_assist)
+		goto err_scheduler;
+
+	entry = proc_create("debug_enabled", 0666, d_sched_assist,
+			&proc_debug_enabled_fops);
+	if (!entry)
+		goto err_assist;
+	entry = proc_create("sched_impt_task", 0666, d_sched_assist,
+			&proc_sched_impt_task_fops);
+	if (!entry)
+		goto err_debug;
+	entry = proc_create("im_flag", 0666, d_sched_assist, &proc_im_flag_fops);
+	if (!entry)
+		goto err_impt;
+	entry = proc_create("im_flag_app", 0666, d_sched_assist,
+			&proc_im_flag_app_fops);
+	if (!entry)
+		goto err_imflag;
+	return 0;
+
+err_imflag:
+	remove_proc_entry("im_flag", d_sched_assist);
+err_impt:
+	remove_proc_entry("sched_impt_task", d_sched_assist);
+err_debug:
+	remove_proc_entry("debug_enabled", d_sched_assist);
+err_assist:
+	remove_proc_entry(OPLUS_SCHEDASSIST_PROC_DIR, d_oplus_scheduler);
+err_scheduler:
+	remove_proc_entry(OPLUS_SCHEDULER_PROC_DIR, NULL);
+	return -ENOMEM;
+}
+device_initcall(oplus_sched_assist_proc_init);
