@@ -145,13 +145,22 @@ static void get_possible_siblings(int cpuid, struct cpumask *cluster_cpus)
 	int cpu;
 	struct cpu_topology *cpu_topo, *cpuid_topo = &cpu_topology[cpuid];
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0))
+	if (cpuid_topo->cluster_id == -1)
+		return;
+#else
 	if (cpuid_topo->package_id == -1)
 		return;
+#endif
 
 	for_each_possible_cpu(cpu) {
 		cpu_topo = &cpu_topology[cpu];
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0))
+		if (cpuid_topo->cluster_id != cpu_topo->cluster_id)
+#else
 		if (cpuid_topo->package_id != cpu_topo->package_id)
+#endif
 			continue;
 		cpumask_set_cpu(cpu, cluster_cpus);
 	}
