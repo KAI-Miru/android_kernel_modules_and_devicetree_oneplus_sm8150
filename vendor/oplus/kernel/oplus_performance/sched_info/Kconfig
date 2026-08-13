@@ -1,0 +1,7 @@
+config OPLUS_FEATURE_CPU_JANKINFO
+	tristate "Oplus CPU jank proc ABI"
+	depends on PROC_FS
+	default n
+	help
+	  Provides the Android 14 ColorOS /proc/jank_info/cpu_jank_info
+	  control plane on older Oplus scheduler-assist kernels.
