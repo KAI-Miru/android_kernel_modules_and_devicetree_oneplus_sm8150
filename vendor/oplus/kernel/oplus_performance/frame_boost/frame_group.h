@@ -7,10 +7,10 @@
 #define _FRAME_GROUP_H
 #include <linux/cpufreq.h>
 
-#include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
-#include <../kernel/sched/sched.h>
-#endif
+/* Only opaque scheduler types are exposed here; sched.h has no include guard on H.40. */
+struct rq;
+struct task_struct;
+struct seq_file;
 
 #define DEFAULT_FRAME_GROUP_ID (1)
 #define SF_FRAME_GROUP_ID (2)
