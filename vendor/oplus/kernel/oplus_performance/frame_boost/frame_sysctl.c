@@ -8,16 +8,17 @@
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/kmemleak.h>
+#include <linux/sched.h>
 
 #include "frame_boost.h"
 
 unsigned int sysctl_frame_boost_enable;
 unsigned int sysctl_frame_boost_debug;
-unsigned int sysctl_slide_boost_enabled;
-unsigned int sysctl_input_boost_enabled;
+/*
+ * H.40 sched_assist already owns these controls.  Reuse that shared state so
+ * Frame Boost and the existing slide/input policy cannot diverge.
+ */
 EXPORT_SYMBOL(sysctl_frame_boost_debug);
-EXPORT_SYMBOL(sysctl_slide_boost_enabled);
-EXPORT_SYMBOL(sysctl_input_boost_enabled);
 
 
 #define INPUT_BOOST_DURATION 1500000000
