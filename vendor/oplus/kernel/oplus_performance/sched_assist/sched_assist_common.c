@@ -20,6 +20,7 @@
 #include <linux/mutex.h>
 
 #include "sched_assist_common.h"
+#include "sched_assist_audio.h"
 #include "sched_assist_slide.h"
 #ifdef CONFIG_MMAP_LOCK_OPT
 #include <linux/mm.h>
@@ -1541,8 +1542,12 @@ static ssize_t proc_sched_impt_task_read(struct file *file,
 
 static void sched_assist_set_im_flag(struct task_struct *task, int im_flag)
 {
-	/* The SM8250 donor accepts the stable integer ABI without clamping it. */
+	/*
+	 * Keep the task-backed Android 14 ABI and feed IM_FLAG_AUDIO through
+	 * the H.40 AudioBoost backend before replacing the old classification.
+	 */
 	task_lock(task);
+	oplus_sched_assist_audio_perf_addIm(task, im_flag);
 	task->ux_im_flag = im_flag;
 	if (im_flag == IM_FLAG_LAUNCHER_NON_UX_RENDER)
 		task->ux_state |= SA_TYPE_HEAVY;
@@ -1712,8 +1717,12 @@ static int __init oplus_sched_assist_proc_init(void)
 			&proc_im_flag_app_fops);
 	if (!entry)
 		goto err_imflag;
+	if (oplus_sched_assist_audio_proc_init(d_sched_assist))
+		goto err_audio;
 	return 0;
 
+err_audio:
+	remove_proc_entry("im_flag_app", d_sched_assist);
 err_imflag:
 	remove_proc_entry("im_flag", d_sched_assist);
 err_impt:
