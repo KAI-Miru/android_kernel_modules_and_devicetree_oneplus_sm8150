@@ -17,6 +17,7 @@
 #include <linux/kallsyms.h>
 #include <linux/trace_events.h>
 #include <linux/rwsem.h>
+#include <linux/mutex.h>
 
 #include "sched_assist_common.h"
 #include "sched_assist_slide.h"
@@ -37,6 +38,13 @@ int sysctl_input_boost_enabled = 0;
 int sysctl_sched_assist_ib_duration_coedecay = 1;
 u64 sched_assist_input_boost_duration = 0;
 int sched_assist_ib_duration_coedecay = 1;
+
+/* Android 14 global sched_assist proc ABI state. */
+static int global_debug_enabled;
+static pid_t save_audio_tgid;
+static pid_t save_top_app_tgid;
+static unsigned int top_app_type;
+
 #define S2NS_T 1000000
 
 //static int param_ux_debug = 0;
