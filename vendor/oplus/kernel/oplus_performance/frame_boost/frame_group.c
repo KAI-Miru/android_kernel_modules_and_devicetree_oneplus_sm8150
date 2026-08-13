@@ -1370,6 +1370,13 @@ static inline bool should_update_cpufreq(u64 wallclock, struct frame_group *grp,
 	return true;
 }
 
+/*
+ * H.40's cpufreq_update_util() accepts WALT-originated updates only.
+ * Preserve the Frame Boost selector while marking its explicit updates
+ * as WALT scheduler updates at the governor handoff.
+ */
+#define FBG_CPUFREQ_UPDATE_FLAGS(flags) ((flags) | SCHED_CPUFREQ_WALT)
+
 static inline void cpufreq_update_util_wrap(struct rq *rq, unsigned int flags)
 {
 	unsigned long lock_flags;
@@ -1425,18 +1432,18 @@ unlock:
 	if (need_update_prev_freq) {
 		rq = cpu_rq(prev_cpu);
 		if (fbg_hook.update_freq) {
-			fbg_hook.update_freq(rq, SCHED_CPUFREQ_DEF_FRAMEBOOST);
+			fbg_hook.update_freq(rq, FBG_CPUFREQ_UPDATE_FLAGS(SCHED_CPUFREQ_DEF_FRAMEBOOST));
 		} else {
-			cpufreq_update_util_wrap(rq, SCHED_CPUFREQ_DEF_FRAMEBOOST);
+			cpufreq_update_util_wrap(rq, FBG_CPUFREQ_UPDATE_FLAGS(SCHED_CPUFREQ_DEF_FRAMEBOOST));
 		}
 	}
 
 	if (need_update_next_freq) {
 		rq = cpu_rq(next_cpu);
 		if (fbg_hook.update_freq) {
-			fbg_hook.update_freq(rq, SCHED_CPUFREQ_DEF_FRAMEBOOST);
+			fbg_hook.update_freq(rq, FBG_CPUFREQ_UPDATE_FLAGS(SCHED_CPUFREQ_DEF_FRAMEBOOST));
 		} else {
-			cpufreq_update_util_wrap(rq, SCHED_CPUFREQ_DEF_FRAMEBOOST);
+			cpufreq_update_util_wrap(rq, FBG_CPUFREQ_UPDATE_FLAGS(SCHED_CPUFREQ_DEF_FRAMEBOOST));
 		}
 	}
 
@@ -1471,9 +1478,9 @@ unlock:
 	if (need_update) {
 		rq = task_rq(tsk);
 		if (fbg_hook.update_freq) {
-			fbg_hook.update_freq(rq, SCHED_CPUFREQ_SF_FRAMEBOOST);
+			fbg_hook.update_freq(rq, FBG_CPUFREQ_UPDATE_FLAGS(SCHED_CPUFREQ_SF_FRAMEBOOST));
 		} else {
-			cpufreq_update_util_wrap(rq, SCHED_CPUFREQ_SF_FRAMEBOOST);
+			cpufreq_update_util_wrap(rq, FBG_CPUFREQ_UPDATE_FLAGS(SCHED_CPUFREQ_SF_FRAMEBOOST));
 		}
 	}
 
