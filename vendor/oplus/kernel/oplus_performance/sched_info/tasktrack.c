@@ -65,6 +65,7 @@ static DEFINE_MUTEX(tasktrack_control_lock);
 static DEFINE_RAW_SPINLOCK(tasktrack_lock);
 static struct tasktrack_entry tasktrack_entries[TASKTRACK_MAX_TASKS];
 static struct tasktrack_entry tasktrack_snapshot[TASKTRACK_MAX_TASKS];
+static pid_t tasktrack_fast_pids[TASKTRACK_MAX_TASKS];
 static bool tasktrack_enabled;
 static bool tasktrack_hooked;
 static bool tasktrack_active;
@@ -92,6 +93,23 @@ static bool tasktrack_has_entries_locked(void)
 
 	for (i = 0; i < TASKTRACK_MAX_TASKS; i++) {
 		if (tasktrack_entries[i].pid > 0)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * Tracepoint callbacks run for every context switch while tracking is armed.
+ * Keep the common unrelated-task case lock-free; these values are updated
+ * together with their entries and never reference dynamically freed storage.
+ */
+static bool tasktrack_pid_maybe_tracked(pid_t pid)
+{
+	int i;
+
+	for (i = 0; i < TASKTRACK_MAX_TASKS; i++) {
+		if (READ_ONCE(tasktrack_fast_pids[i]) == pid)
 			return true;
 	}
 
@@ -158,8 +176,14 @@ static void tasktrack_sched_switch(void *unused, bool preempt,
 	unsigned long flags;
 	u64 now_ns;
 	u8 next_prev_state;
+	bool prev_tracked;
+	bool next_tracked;
 
 	if (!READ_ONCE(tasktrack_active))
+		return;
+	prev_tracked = tasktrack_pid_maybe_tracked(prev->pid);
+	next_tracked = tasktrack_pid_maybe_tracked(next->pid);
+	if (!prev_tracked && !next_tracked)
 		return;
 
 	now_ns = ktime_get_ns();
@@ -188,6 +212,8 @@ static void tasktrack_sched_waking(void *unused, struct task_struct *task)
 	u64 now_ns;
 
 	if (!READ_ONCE(tasktrack_active))
+		return;
+	if (!tasktrack_pid_maybe_tracked(task->pid))
 		return;
 
 	now_ns = ktime_get_ns();
@@ -256,6 +282,7 @@ static void tasktrack_clear_entries(void)
 
 	raw_spin_lock_irqsave(&tasktrack_lock, flags);
 	memset(tasktrack_entries, 0, sizeof(tasktrack_entries));
+	memset(tasktrack_fast_pids, 0, sizeof(tasktrack_fast_pids));
 	raw_spin_unlock_irqrestore(&tasktrack_lock, flags);
 }
 
@@ -274,6 +301,7 @@ static int tasktrack_add_pid_locked(pid_t pid, u64 now_ns)
 
 		memset(entry, 0, sizeof(*entry));
 		entry->pid = pid;
+		WRITE_ONCE(tasktrack_fast_pids[i], pid);
 		entry->tgid = pid;
 		strncpy(entry->comm, "pending", TASK_COMM_LEN - 1);
 		entry->state = TASKTRACK_OTHER;
@@ -286,11 +314,17 @@ static int tasktrack_add_pid_locked(pid_t pid, u64 now_ns)
 
 static void tasktrack_remove_pid_locked(pid_t pid)
 {
-	struct tasktrack_entry *entry;
+	int i;
 
-	entry = tasktrack_find_locked(pid);
-	if (entry)
-		memset(entry, 0, sizeof(*entry));
+	for (i = 0; i < TASKTRACK_MAX_TASKS; i++) {
+		if (tasktrack_entries[i].pid != pid)
+			continue;
+
+		WRITE_ONCE(tasktrack_fast_pids[i], 0);
+		memset(&tasktrack_entries[i], 0,
+				sizeof(tasktrack_entries[i]));
+		return;
+	}
 }
 
 int tasktrack_init(void)
