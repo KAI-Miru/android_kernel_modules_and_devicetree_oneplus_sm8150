@@ -45,8 +45,6 @@ struct oplus_sched_cluster {
 
 extern int fbg_num_sched_clusters;
 struct binder_transaction;
-struct binder_thread;
-struct binder_proc;
 /* FIXME */
 #define MAX_CLS_NUM 5
 extern struct oplus_sched_cluster *fb_cluster[MAX_CLS_NUM];
@@ -57,8 +55,12 @@ void fbg_binder_wakeup_hook(void *unused, struct task_struct *caller_task,
 		unsigned int code, bool pending_async, bool sync);
 void fbg_binder_restore_priority_hook(void *unused, struct binder_transaction *t,
 			struct task_struct *task);
+/*
+ * H.40 keeps binder_thread private to binder.c, so the hook receives the
+ * Binder thread's task instead of depending on Binder's private layout.
+ */
 void fbg_binder_wait_for_work_hook(void *unused, bool do_proc_work,
-			struct binder_thread *tsk, struct binder_proc *proc);
+			struct task_struct *tsk);
 void fbg_sync_txn_recvd_hook(void *unused, struct task_struct *tsk, struct task_struct *from);
 void fbg_update_cfs_util_hook(void *unused, struct task_struct *tsk,
 			u64 runtime, u64 vruntime);

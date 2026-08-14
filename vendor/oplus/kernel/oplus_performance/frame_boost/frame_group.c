@@ -8,7 +8,6 @@
 #include <linux/sched/cpufreq.h>
 #include <linux/syscore_ops.h>
 #include <linux/version.h>
-#include <../drivers/android/binder_internal.h>
 #include <../kernel/sched/sched.h>
 #include <linux/reciprocal_div.h>
 
@@ -795,17 +794,22 @@ void fbg_binder_restore_priority_hook(void *unused, struct binder_transaction *t
  * @do_proc_work: whether the binder thread is waiting for new request
  *       the other paramenter is unused
  */
+/*
+ * H.40 keeps struct binder_thread private to binder.c.  Binder passes its
+ * task across this hook boundary, which is the only state Frame Boost needs
+ * when a worker returns to the idle Binder pool.
+ */
 void fbg_binder_wait_for_work_hook(void *unused, bool do_proc_work,
-	struct binder_thread *tsk, struct binder_proc *proc)
+	struct task_struct *tsk)
 {
 	unsigned long flags;
 	raw_spinlock_t *lock = NULL;
 
-	if (do_proc_work) {
-		lock = task_get_frame_group_lock(tsk->task);
+	if (do_proc_work && tsk) {
+		lock = task_get_frame_group_lock(tsk);
 
 		raw_spin_lock_irqsave(lock, flags);
-		remove_binder_from_frame_group(tsk->task);
+		remove_binder_from_frame_group(tsk);
 		raw_spin_unlock_irqrestore(lock, flags);
 	}
 }
@@ -1988,6 +1992,26 @@ static bool task_is_rt(struct task_struct *task)
 	return false;
 }
 
+/*
+ * H.40 has the root RT runqueue fields but does not expose the newer
+ * rt_rq_is_runnable() helper.  Frame Boost only queries rq->rt, so the
+ * runnable condition is the unthrottled root RT runnable count.
+ */
+static inline bool fbg_rt_rq_is_runnable(const struct rt_rq *rt_rq)
+{
+	return rt_rq->rt_nr_running && !rt_rq->rt_throttled;
+}
+
+/*
+ * H.40 predates available_idle_cpu().  SM8150 is physical hardware, with no
+ * vCPU-preemption state to exclude, making idle_cpu() the equivalent
+ * placement predicate.
+ */
+static inline bool fbg_available_idle_cpu(int cpu)
+{
+	return idle_cpu(cpu);
+}
+
 bool set_frame_group_task_to_perfer_cpu(struct task_struct *p, int *target_cpu)
 {
 	struct frame_group *grp = &default_frame_boost_group;
@@ -2051,7 +2075,7 @@ retry:
 		curr = rq->curr;
 		if (curr) {
 			/* If there are ux and rt threads in running state on this CPU, drop it! */
-			if (curr->ux_state & (SCHED_ASSIST_UX_MASK | POSSIBLE_UX_MASK | SA_TYPE_INHERIT))
+			if (curr->ux_state & (SCHED_ASSIST_UX_MASK | SA_TYPE_INHERIT))
 				continue;
 
 			if (curr->prio < MAX_RT_PRIO)
@@ -2061,7 +2085,7 @@ retry:
 			if (!list_empty(&rq->ux_thread_list))
 				continue;
 
-			if (rt_rq_is_runnable(&rq->rt))
+			if (fbg_rt_rq_is_runnable(&rq->rt))
 				continue;
 
 			/* Avoid puting group task on the same cpu */
@@ -2082,7 +2106,7 @@ retry:
 		backup_cpu = iter_cpu;
 		walk_next_cls = false;
 
-		if (available_idle_cpu(iter_cpu)
+		if (fbg_available_idle_cpu(iter_cpu)
 			|| (iter_cpu == task_cpu(p) && p->state == TASK_RUNNING)) {
 			*target_cpu = iter_cpu;
 			ret = true;
