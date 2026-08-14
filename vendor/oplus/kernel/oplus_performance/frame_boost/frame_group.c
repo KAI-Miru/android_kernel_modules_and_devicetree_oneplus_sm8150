@@ -328,7 +328,12 @@ static inline void frame_grp_with_lock_assert(struct frame_group *grp)
 
 static inline bool __frame_boost_enabled(void)
 {
-	return likely(sysctl_frame_boost_enable);
+	/*
+	 * Keep the ColorOS 14 proc/ioctl ABI usable by default, but do not run
+	 * the newly backported policy on H.40 until an explicit root test arms it.
+	 */
+	return likely(sysctl_frame_boost_enable) &&
+		!READ_ONCE(sysctl_frame_boost_safe_mode);
 }
 
 bool frame_boost_enabled(void)
@@ -339,7 +344,7 @@ EXPORT_SYMBOL_GPL(frame_boost_enabled);
 
 bool is_fbg_task(struct task_struct *p)
 {
-	return p->fbg_state;
+	return p && READ_ONCE(p->fbg_state);
 }
 EXPORT_SYMBOL_GPL(is_fbg_task);
 
@@ -761,8 +766,10 @@ void fbg_binder_wakeup_hook(void *unused, struct task_struct *caller_task,
 	struct task_struct *binder_proc_task, struct task_struct *binder_th_task,
 	unsigned int code, bool pending_async, bool sync)
 {
-	if (sync)
-		add_binder_to_frame_group(binder_th_task, current);
+	if (!__frame_boost_enabled() || !sync)
+		return;
+
+	add_binder_to_frame_group(binder_th_task, current);
 }
 
 /*
@@ -778,13 +785,14 @@ void fbg_binder_restore_priority_hook(void *unused, struct binder_transaction *t
 	unsigned long flags;
 	raw_spinlock_t *lock = NULL;
 
-	lock = task_get_frame_group_lock(task);
+	/* A restore can arrive without a task; do not dereference it first. */
+	if (!task || !(READ_ONCE(task->fbg_state) & BINDER_FRAME_TASK))
+		return;
 
-	if (task != NULL) {
-		raw_spin_lock_irqsave(lock, flags);
-		remove_binder_from_frame_group(task);
-		raw_spin_unlock_irqrestore(lock, flags);
-	}
+	lock = task_get_frame_group_lock(task);
+	raw_spin_lock_irqsave(lock, flags);
+	remove_binder_from_frame_group(task);
+	raw_spin_unlock_irqrestore(lock, flags);
 }
 
 /*
@@ -805,17 +813,21 @@ void fbg_binder_wait_for_work_hook(void *unused, bool do_proc_work,
 	unsigned long flags;
 	raw_spinlock_t *lock = NULL;
 
-	if (do_proc_work && tsk) {
-		lock = task_get_frame_group_lock(tsk);
+	if (!do_proc_work || !tsk ||
+		!(READ_ONCE(tsk->fbg_state) & BINDER_FRAME_TASK))
+		return;
 
-		raw_spin_lock_irqsave(lock, flags);
-		remove_binder_from_frame_group(tsk);
-		raw_spin_unlock_irqrestore(lock, flags);
-	}
+	lock = task_get_frame_group_lock(tsk);
+	raw_spin_lock_irqsave(lock, flags);
+	remove_binder_from_frame_group(tsk);
+	raw_spin_unlock_irqrestore(lock, flags);
 }
 
 void fbg_sync_txn_recvd_hook(void *unused, struct task_struct *tsk, struct task_struct *from)
 {
+	if (!__frame_boost_enabled())
+		return;
+
 	add_binder_to_frame_group(tsk, from);
 }
 
@@ -1604,7 +1616,8 @@ static inline void fbg_update_task_util(struct task_struct *tsk, u64 runtime,
 	bool composition_part = false;
 	bool default_part = false;
 
-	if (tsk->fbg_state == NONE_FRAME_TASK)
+	if (!__frame_boost_enabled() || !tsk ||
+		READ_ONCE(tsk->fbg_state) == NONE_FRAME_TASK)
 		return;
 
 	if (tsk->fbg_state & FRAME_COMPOSITION) {
@@ -1675,6 +1688,13 @@ static void update_group_nr_running(struct task_struct *p, int event)
 	int group_id;
 	unsigned long flags;
 
+	/* This runs from __schedule().  Do not take a global FBG lock for
+	 * ordinary tasks; only static frame tasks affect nr_running. */
+	if (!p || (event == PICK_NEXT_TASK &&
+		!(READ_ONCE(p->fbg_state) & STATIC_FRAME_TASK)) ||
+		(event == PUT_PREV_TASK && !READ_ONCE(p->fbg_running)))
+		return;
+
 	grp = task_get_frame_group(p);
 	lock = task_get_frame_group_lock(p);
 	group_id = get_frame_group_id(grp);
@@ -1705,13 +1725,16 @@ static void update_group_nr_running(struct task_struct *p, int event)
 void fbg_android_rvh_schedule_handler(struct task_struct *prev,
 	struct task_struct *next, struct rq *rq)
 {
-	if (atomic_read(&fbg_initialized) == 0)
+	if (!__frame_boost_enabled() || atomic_read(&fbg_initialized) == 0)
 		return;
 
 	if (unlikely(prev == next))
 		return;
 
-	if (unlikely(sysctl_frame_boost_debug) && next) {
+	/* trace_printk() in __schedule() is only safe for the small set of
+	 * tracked frame tasks, never for every context switch. */
+	if (unlikely(sysctl_frame_boost_debug) && next &&
+		READ_ONCE(next->fbg_state)) {
 		fbg_state_systrace_c(cpu_of(rq), next->fbg_state);
 	}
 
@@ -1728,7 +1751,7 @@ void fbg_android_rvh_cpufreq_transition(struct cpufreq_policy *policy)
 	struct rq *rq;
 	int cpu;
 
-	if (atomic_read(&fbg_initialized) == 0)
+	if (!__frame_boost_enabled() || atomic_read(&fbg_initialized) == 0)
 		return;
 
 	for_each_cpu(cpu, policy->cpus) {
@@ -2177,6 +2200,11 @@ void fbg_flush_task_hook(void *unused, struct task_struct *tsk)
 {
 	unsigned long flags;
 	raw_spinlock_t *lock = NULL;
+
+	/* Exit cleanup must remain active after a controlled disarm, but ordinary
+	 * exiting tasks should never contend on an FBG lock. */
+	if (!tsk || !READ_ONCE(tsk->fbg_state))
+		return;
 
 	lock = task_get_frame_group_lock(tsk);
 

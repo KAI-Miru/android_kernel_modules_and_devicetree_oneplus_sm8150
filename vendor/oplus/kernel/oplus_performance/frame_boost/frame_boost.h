@@ -46,6 +46,11 @@ struct fbg_vendor_hook {
 
 extern unsigned int sysctl_frame_boost_enable;
 extern unsigned int sysctl_frame_boost_debug;
+/*
+ * H.40 safety containment: keep the Frame Boost ABI live while its new
+ * scheduler policy is explicitly armed for controlled testing.
+ */
+extern unsigned int sysctl_frame_boost_safe_mode;
 extern int stune_boost[BOOST_MAX_TYPE];
 extern struct fbg_vendor_hook fbg_hook;
 

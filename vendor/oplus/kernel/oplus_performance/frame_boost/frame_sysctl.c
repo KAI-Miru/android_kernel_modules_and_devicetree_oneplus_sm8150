@@ -15,6 +15,12 @@
 unsigned int sysctl_frame_boost_enable;
 unsigned int sysctl_frame_boost_debug;
 /*
+ * Default to ABI-only mode on the 4.14 backport.  This is deliberately
+ * independent from frame_boost_enabled: ColorOS can exercise its proc ABI
+ * without enabling unvalidated scheduler policy on H.40.
+ */
+unsigned int sysctl_frame_boost_safe_mode;
+/*
  * H.40 sched_assist already owns these controls.  Reuse that shared state so
  * Frame Boost and the existing slide/input policy cannot diverge.
  */
@@ -105,6 +111,13 @@ struct ctl_table frame_boost_table[] = {
 		.proc_handler	= proc_dointvec,
 	},
 	{
+		.procname	= "frame_boost_safe_mode",
+		.data		= &sysctl_frame_boost_safe_mode,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0600,
+		.proc_handler	= proc_dointvec,
+	},
+	{
 		.procname	= "slide_boost_enabled",
 		.data		= &sysctl_slide_boost_enabled,
 		.maxlen		= sizeof(unsigned int),
@@ -136,6 +149,7 @@ void fbg_sysctl_init(void)
 
 	sysctl_frame_boost_enable = 1;
 	sysctl_frame_boost_debug = 0;
+	sysctl_frame_boost_safe_mode = 1;
 	sysctl_slide_boost_enabled = 0;
 	sysctl_input_boost_enabled = 0;
 
