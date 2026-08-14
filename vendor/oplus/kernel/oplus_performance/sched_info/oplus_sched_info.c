@@ -23,6 +23,8 @@
 #include <linux/workqueue.h>
 #include <../kernel/sched/sched.h>
 
+#include "tasktrack.h"
+
 #define JANK_INFO_DIR                   "jank_info"
 #define JANK_INFO_PROC_NODE             "cpu_jank_info"
 #define PROC_NUMBUF                     32
@@ -337,9 +339,15 @@ static const struct file_operations proc_clm_mux_switch_fops = {
 static int __init jank_info_init(void)
 {
 	struct proc_dir_entry *entry;
+	bool tasktrack_proc_ready = false;
+	int ret;
 
 	INIT_DELAYED_WORK(&clm_monitor_work, clm_monitor_workfn);
 	INIT_DELAYED_WORK(&grab_hotthread_work, grab_hotthread_workfn);
+
+	ret = tasktrack_init();
+	if (ret)
+		return ret;
 
 	jank_dir = proc_mkdir(JANK_INFO_DIR, NULL);
 	if (!jank_dir)
@@ -380,15 +388,23 @@ static int __init jank_info_init(void)
 			&proc_clm_mux_switch_fops);
 	if (!entry)
 		goto err_proc;
+	ret = tasktrack_proc_init(cpu_jank_dir);
+	if (ret)
+		goto err_proc;
+	tasktrack_proc_ready = true;
 
 	return 0;
 
 err_proc:
+	if (tasktrack_proc_ready)
+		tasktrack_proc_deinit(cpu_jank_dir);
+	tasktrack_deinit();
 	remove_proc_subtree(JANK_INFO_DIR, NULL);
 	jank_dir = NULL;
 	cpu_jank_dir = NULL;
 	return -ENOMEM;
 err_jank_dir:
+	tasktrack_deinit();
 	remove_proc_entry(JANK_INFO_DIR, NULL);
 	jank_dir = NULL;
 	return -ENOMEM;
@@ -396,6 +412,8 @@ err_jank_dir:
 
 static void __exit jank_info_exit(void)
 {
+	tasktrack_proc_deinit(cpu_jank_dir);
+	tasktrack_deinit();
 	cancel_delayed_work_sync(&grab_hotthread_work);
 	cancel_delayed_work_sync(&clm_monitor_work);
 	remove_proc_subtree(JANK_INFO_DIR, NULL);
