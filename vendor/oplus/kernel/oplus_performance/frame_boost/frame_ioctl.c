@@ -8,6 +8,7 @@
 #include <linux/sysctl.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/sched.h>
 #include <../fs/proc/internal.h>
 
 #include "frame_boost.h"
@@ -18,10 +19,15 @@
 #define IM_FLAG_RENDERENGINE (3)
 
 static struct proc_dir_entry *frame_boost_proc;
-#ifdef CONFIG_OPLUS_FEATURE_IM
+/*
+ * Stage 5 supplies Android 14 IM classification through sched_assist's
+ * task->ux_im_flag.  The donor's CONFIG_OPLUS_FEATURE_IM/task->im_flag pair
+ * does not exist on H.40, so use the active scheduler-owned state directly.
+ */
+#ifdef OPLUS_FEATURE_SCHED_ASSIST
 static inline int oplus_get_im_flag(struct task_struct *task)
 {
-	return task->im_flag;
+	return task->ux_im_flag;
 }
 #else
 static inline int oplus_get_im_flag(struct task_struct *task)
