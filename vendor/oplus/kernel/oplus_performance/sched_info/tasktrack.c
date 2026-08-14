@@ -16,7 +16,6 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
-#include <linux/limits.h>
 #include <linux/math64.h>
 #include <linux/mutex.h>
 #include <linux/proc_fs.h>
@@ -423,7 +422,7 @@ static ssize_t tasktrack_proc_write(struct file *file,
 			ret = -EINVAL;
 			break;
 		}
-		if (!value || value == INT_MIN) {
+		if (!value || value == -2147483647 - 1) {
 			ret = -EINVAL;
 			break;
 		}
