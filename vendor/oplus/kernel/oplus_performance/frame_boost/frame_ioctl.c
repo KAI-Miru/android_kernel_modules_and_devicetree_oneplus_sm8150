@@ -5,6 +5,7 @@
 
 #include <linux/ioctl.h>
 #include <linux/compat.h>
+#include <linux/uaccess.h>
 #include <linux/sysctl.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -12,6 +13,7 @@
 #include <../fs/proc/internal.h>
 
 #include "frame_boost.h"
+#include "frame_ioctl.h"
 #include "frame_debug.h"
 #include "cluster_boost.h"
 
