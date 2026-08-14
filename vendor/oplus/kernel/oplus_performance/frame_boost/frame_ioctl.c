@@ -73,6 +73,11 @@ static long ofb_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	if (_IOC_NR(cmd) >= CMD_ID_MAX)
 		return -EINVAL;
 
+	/* Keep the ColorOS 14 control ABI live while safe mode quarantines
+	 * the unvalidated H.40 scheduler policy. */
+	if (!frame_boost_enabled())
+		return 0;
+
 	if (copy_from_user(&data, uarg, sizeof(data))) {
 		ofb_err("invalid address");
 		return -EFAULT;
@@ -226,6 +231,58 @@ static long handle_ofb_extra_cmd(unsigned int cmd, void __user *uarg)
 	return 0;
 }
 
+/* Return a defined reply for the only extra command with output when
+ * frame_boost_safe_mode is active. */
+static long ofb_safe_notify_frame_start(void __user *uarg)
+{
+	struct ofb_frame_util_info info = {};
+
+	if (!uarg)
+		return -EINVAL;
+
+	if (copy_to_user(uarg, &info, sizeof(info)))
+		return -EFAULT;
+
+	return 0;
+}
+
+/*
+ * Android 14 extension libraries have shipped more than one encoded ioctl
+ * size/direction for this command.  Its number and the leading fields are
+ * stable, so normalize that ABI boundary before applying the SF semantics.
+ */
+static long ofb_handle_sf_msg_trans(void __user *uarg, unsigned int cmd)
+{
+	struct ofb_ctrl_data data = {};
+	size_t copy_len = _IOC_SIZE(cmd);
+	size_t min_len = sizeof(data.pid) * 4 + sizeof(data.stage);
+
+	if (!uarg)
+		return -EINVAL;
+
+	if (copy_len > sizeof(data))
+		copy_len = sizeof(data);
+	if (copy_len < min_len)
+		copy_len = min_len;
+
+	if (copy_from_user(&data, uarg, copy_len)) {
+		ofb_debug("invalid address");
+		return -EFAULT;
+	}
+
+	if (data.stage == BOOST_MSG_TRANS_START)
+		rollover_frame_group_window(SF_FRAME_GROUP_ID);
+
+	if (data.stage == BOOST_SF_EXECUTE) {
+		if (data.pid == data.tid)
+			set_sf_thread(data.pid, data.tid);
+		else
+			set_renderengine_thread(data.pid, data.tid);
+	}
+
+	return 0;
+}
+
 static long ofb_sys_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	long ret = 0;
@@ -234,6 +291,11 @@ static long ofb_sys_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 	void __user *uarg = (void __user *)arg;
 
 	if (is_ofb_extra_cmd(cmd)) {
+		if (!frame_boost_enabled()) {
+			if (_IOC_NR(cmd) == NOTIFY_FRAME_START)
+				return ofb_safe_notify_frame_start(uarg);
+			return 0;
+		}
 		return handle_ofb_extra_cmd(cmd, uarg);
 	}
 
@@ -243,6 +305,12 @@ static long ofb_sys_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 	if (_IOC_NR(cmd) >= CMD_ID_MAX)
 		return -EINVAL;
 
+	/* No scheduler policy is permitted until an explicit root test arms it. */
+	if (!frame_boost_enabled())
+		return 0;
+
+	if (_IOC_NR(cmd) == SET_SF_MSG_TRANS)
+		return ofb_handle_sf_msg_trans(uarg, cmd);
 
 	switch (cmd) {
 	case CMD_ID_BOOST_HIT:
@@ -261,24 +329,6 @@ static long ofb_sys_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		if (data.stage == BOOST_ADD_FRAME_TASK)
 			add_rm_related_frame_task(data.pid, data.tid, data.capacity_need,
 				data.related_depth, data.related_width);
-
-		break;
-	case CMD_ID_SET_SF_MSG_TRANS:
-		if (copy_from_user(&data, uarg, sizeof(data))) {
-			ofb_debug("invalid address");
-			return -EFAULT;
-		}
-
-		if (data.stage == BOOST_MSG_TRANS_START)
-			rollover_frame_group_window(SF_FRAME_GROUP_ID);
-
-		if (data.stage == BOOST_SF_EXECUTE) {
-			if (data.pid == data.tid) {
-				set_sf_thread(data.pid, data.tid);
-			} else {
-				set_renderengine_thread(data.pid, data.tid);
-			}
-		}
 
 		break;
 	case CMD_ID_BOOST_STUNE:
