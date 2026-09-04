@@ -21,8 +21,6 @@
 #include <linux/tick.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
-#include <../kernel/sched/sched.h>
-
 #include "osi_base.h"
 #include "osi_cpuload.h"
 #include "osi_loadindicator.h"
