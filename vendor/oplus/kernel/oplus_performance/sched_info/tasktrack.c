@@ -22,6 +22,7 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
+#include <linux/stacktrace.h>
 #include <linux/string.h>
 #include <linux/timekeeping.h>
 #include <linux/uaccess.h>
@@ -34,6 +35,9 @@
 #define TASKTRACK_WINDOW_NS		128000000ULL
 #define TASKTRACK_EVENT_COUNT		64
 #define TASKTRACK_EVENT_THRESHOLD_NS	1000000ULL
+#define TASKTRACK_CALLSTACK_COUNT	64
+#define TASKTRACK_CALLSTACK_DEPTH	4
+#define TASKTRACK_CALLSTACK_THRESHOLD_NS	50000000ULL
 
 /*
  * Keep the OP9R column order.  H.40 can account running, runnable and
@@ -70,6 +74,13 @@ struct tasktrack_event {
 	struct timespec64 timestamp;
 };
 
+struct tasktrack_callstack {
+	pid_t pid;
+	unsigned int nr_entries;
+	unsigned long entries[TASKTRACK_CALLSTACK_DEPTH];
+	struct timespec64 timestamp;
+};
+
 static DEFINE_MUTEX(tasktrack_control_lock);
 static DEFINE_MUTEX(tasktrack_event_read_lock);
 static DEFINE_RAW_SPINLOCK(tasktrack_lock);
@@ -79,8 +90,11 @@ static pid_t tasktrack_fast_pids[TASKTRACK_MAX_TASKS];
 static struct tasktrack_event tasktrack_latency_events[TASKTRACK_EVENT_COUNT];
 static struct tasktrack_event tasktrack_iowait_events[TASKTRACK_EVENT_COUNT];
 static struct tasktrack_event tasktrack_event_snapshot[TASKTRACK_EVENT_COUNT];
+static struct tasktrack_callstack tasktrack_callstacks[TASKTRACK_CALLSTACK_COUNT];
+static struct tasktrack_callstack tasktrack_callstack_snapshot[TASKTRACK_CALLSTACK_COUNT];
 static u64 tasktrack_latency_sequence;
 static u64 tasktrack_iowait_sequence;
+static u64 tasktrack_callstack_sequence;
 static bool tasktrack_enabled;
 static bool tasktrack_hooked;
 static bool tasktrack_active;
@@ -181,8 +195,44 @@ static void tasktrack_record_event_locked(struct tasktrack_event *events,
 	(*sequence)++;
 }
 
+/*
+ * OP9R captures four kernel frames when a selected task leaves a long
+ * uninterruptible sleep.  The tracked task is still non-running at the
+ * sched_waking tracepoint, so the 4.14 stack walker can safely inspect its
+ * saved context here.  This remains behind the existing task-track gate and
+ * uses a fixed ring: no allocation and no hook are added to the hot path.
+ */
+static void tasktrack_record_callstack_locked(struct task_struct *task,
+		u64 delta_ns)
+{
+	struct tasktrack_callstack *callstack;
+	struct stack_trace trace;
+	unsigned int i;
+
+	if (!task || delta_ns < TASKTRACK_CALLSTACK_THRESHOLD_NS)
+		return;
+
+	callstack = &tasktrack_callstacks[tasktrack_callstack_sequence &
+		(TASKTRACK_CALLSTACK_COUNT - 1)];
+	memset(callstack, 0, sizeof(*callstack));
+	callstack->pid = task->pid;
+	trace.nr_entries = 0;
+	trace.max_entries = TASKTRACK_CALLSTACK_DEPTH;
+	trace.entries = callstack->entries;
+	trace.skip = 1;
+	save_stack_trace_tsk(task, &trace);
+
+	for (i = 0; i < trace.nr_entries; i++) {
+		if (callstack->entries[i] == ULONG_MAX)
+			break;
+	}
+	callstack->nr_entries = i;
+	ktime_get_real_ts64(&callstack->timestamp);
+	tasktrack_callstack_sequence++;
+}
+
 static void tasktrack_record_transition_locked(struct tasktrack_entry *entry,
-		u64 now_ns)
+		struct task_struct *task, u64 now_ns)
 {
 	u64 delta_ns;
 
@@ -196,6 +246,8 @@ static void tasktrack_record_transition_locked(struct tasktrack_entry *entry,
 	else if (entry->state == TASKTRACK_DISKSLEEP_INIOWAIT)
 		tasktrack_record_event_locked(tasktrack_iowait_events,
 			&tasktrack_iowait_sequence, entry->pid, delta_ns);
+	else if (entry->state == TASKTRACK_DISKSLEEP)
+		tasktrack_record_callstack_locked(task, delta_ns);
 }
 
 static void tasktrack_account_until_locked(struct tasktrack_entry *entry,
@@ -212,7 +264,7 @@ static void tasktrack_set_state_locked(struct tasktrack_entry *entry,
 		struct task_struct *task, u8 state, u64 now_ns)
 {
 	tasktrack_refresh_identity_locked(entry, task);
-	tasktrack_record_transition_locked(entry, now_ns);
+	tasktrack_record_transition_locked(entry, task, now_ns);
 	tasktrack_account_until_locked(entry, now_ns);
 	entry->state = state;
 }
@@ -347,8 +399,10 @@ static void tasktrack_clear_entries(void)
 	memset(tasktrack_fast_pids, 0, sizeof(tasktrack_fast_pids));
 	memset(tasktrack_latency_events, 0, sizeof(tasktrack_latency_events));
 	memset(tasktrack_iowait_events, 0, sizeof(tasktrack_iowait_events));
+	memset(tasktrack_callstacks, 0, sizeof(tasktrack_callstacks));
 	tasktrack_latency_sequence = 0;
 	tasktrack_iowait_sequence = 0;
+	tasktrack_callstack_sequence = 0;
 	raw_spin_unlock_irqrestore(&tasktrack_lock, flags);
 }
 
@@ -609,6 +663,68 @@ static const struct file_operations tasktrack_enable_fops = {
 	.release = single_release,
 };
 
+static int tasktrack_callstack_proc_show(struct seq_file *m, void *v)
+{
+	struct tasktrack_callstack *callstack;
+	unsigned long flags;
+	u64 sequence;
+	u64 first;
+	u64 record;
+	unsigned int frame;
+	bool found = false;
+
+	if (!READ_ONCE(tasktrack_enabled)) {
+		seq_puts(m, "Please enable this feature first!!!\n");
+		return 0;
+	}
+
+	mutex_lock(&tasktrack_event_read_lock);
+	raw_spin_lock_irqsave(&tasktrack_lock, flags);
+	memcpy(tasktrack_callstack_snapshot, tasktrack_callstacks,
+		sizeof(tasktrack_callstack_snapshot));
+	sequence = tasktrack_callstack_sequence;
+	raw_spin_unlock_irqrestore(&tasktrack_lock, flags);
+
+	first = sequence > TASKTRACK_CALLSTACK_COUNT ?
+		sequence - TASKTRACK_CALLSTACK_COUNT : 0;
+	for (record = first; record < sequence; record++) {
+		callstack = &tasktrack_callstack_snapshot[record &
+			(TASKTRACK_CALLSTACK_COUNT - 1)];
+		if (callstack->pid <= 0 || !callstack->nr_entries)
+			continue;
+
+		found = true;
+		seq_printf(m, "[%llu.%lu] [%d] [",
+			(unsigned long long)callstack->timestamp.tv_sec,
+			(unsigned long)callstack->timestamp.tv_nsec,
+			callstack->pid);
+		for (frame = 0; frame < callstack->nr_entries; frame++) {
+			if (frame)
+				seq_puts(m, "<-");
+			seq_printf(m, "%pS", (void *)callstack->entries[frame]);
+		}
+		seq_puts(m, "] \n");
+	}
+	if (!found)
+		seq_puts(m, "<NULL>\n");
+	mutex_unlock(&tasktrack_event_read_lock);
+
+	return 0;
+}
+
+static int tasktrack_callstack_proc_open(struct inode *inode,
+		struct file *file)
+{
+	return single_open(file, tasktrack_callstack_proc_show, inode->i_private);
+}
+
+static const struct file_operations tasktrack_callstack_fops = {
+	.open = tasktrack_callstack_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int tasktrack_event_proc_show(struct seq_file *m,
 		struct tasktrack_event *events)
 {
@@ -684,6 +800,11 @@ int tasktrack_proc_init(struct proc_dir_entry *parent)
 		return -ENOMEM;
 	}
 
+	entry = proc_create("callstack", 0444, parent,
+			&tasktrack_callstack_fops);
+	if (!entry)
+		goto err_callstack;
+
 	entry = proc_create("sched_latency", 0444, parent,
 			&tasktrack_latency_fops);
 	if (!entry)
@@ -699,6 +820,8 @@ int tasktrack_proc_init(struct proc_dir_entry *parent)
 err_iowait:
 	remove_proc_entry("sched_latency", parent);
 err_latency:
+	remove_proc_entry("callstack", parent);
+err_callstack:
 	remove_proc_entry("task_track_enable", parent);
 	remove_proc_entry("task_track", parent);
 	return -ENOMEM;
@@ -708,6 +831,7 @@ void tasktrack_proc_deinit(struct proc_dir_entry *parent)
 {
 	remove_proc_entry("sched_iowait", parent);
 	remove_proc_entry("sched_latency", parent);
+	remove_proc_entry("callstack", parent);
 	remove_proc_entry("task_track_enable", parent);
 	remove_proc_entry("task_track", parent);
 }
