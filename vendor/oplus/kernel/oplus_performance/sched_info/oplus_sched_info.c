@@ -23,6 +23,7 @@
 #include <linux/workqueue.h>
 #include "osi_base.h"
 #include "osi_cpuload.h"
+#include "osi_hotthread.h"
 #include "osi_loadindicator.h"
 #include "osi_onlinecpu.h"
 #include "osi_topology.h"
@@ -221,6 +222,7 @@ static ssize_t proc_clm_enable_write(struct file *file,
 		const char __user *buf, size_t count, loff_t *ppos)
 {
 	ssize_t ret;
+	bool active_enabled;
 	bool monitor_enabled;
 
 	ret = clm_value_write(&clm_enable, buf, count);
@@ -229,9 +231,11 @@ static ssize_t proc_clm_enable_write(struct file *file,
 
 	mutex_lock(&clm_lock);
 	monitor_enabled = clm_monitor_enabled_locked();
+	active_enabled = control_array[ACTIVE_GRAB_BIT];
 	if (monitor_enabled)
 		schedule_delayed_work(&clm_monitor_work,
 			usecs_to_jiffies(CLM_MONITOR_PERIOD_US));
+	osi_hotthread_set_enabled(monitor_enabled || active_enabled);
 	mutex_unlock(&clm_lock);
 
 	if (!monitor_enabled)
@@ -323,6 +327,7 @@ static ssize_t proc_clm_mux_switch_write(struct file *file,
 	if (monitor_enabled)
 		schedule_delayed_work(&clm_monitor_work,
 			usecs_to_jiffies(CLM_MONITOR_PERIOD_US));
+	osi_hotthread_set_enabled(monitor_enabled || active_enabled);
 	mutex_unlock(&clm_lock);
 
 	if (!active_enabled)
@@ -346,6 +351,7 @@ static int __init jank_info_init(void)
 {
 	struct proc_dir_entry *entry;
 	bool tasktrack_proc_ready = false;
+	bool hotthread_proc_ready = false;
 	int ret;
 
 	cluster_init();
@@ -365,6 +371,10 @@ static int __init jank_info_init(void)
 	cpu_jank_dir = proc_mkdir(JANK_INFO_PROC_NODE, jank_dir);
 	if (!cpu_jank_dir)
 		goto err_jank_dir;
+	ret = osi_hotthread_proc_init(cpu_jank_dir);
+	if (ret)
+		goto err_proc;
+	hotthread_proc_ready = true;
 
 	entry = proc_create("clm_enable", 0666, cpu_jank_dir,
 			&proc_clm_enable_fops);
@@ -421,6 +431,8 @@ err_load_indicator:
 	jank_load_indicator_proc_deinit(cpu_jank_dir);
 
 err_proc:
+	if (hotthread_proc_ready)
+		osi_hotthread_proc_deinit(cpu_jank_dir);
 	if (tasktrack_proc_ready)
 		tasktrack_proc_deinit(cpu_jank_dir);
 	tasktrack_deinit();
@@ -441,6 +453,7 @@ static void __exit jank_info_exit(void)
 	jank_version_proc_deinit(cpu_jank_dir);
 	jank_cpuload_proc_deinit(cpu_jank_dir);
 	jank_load_indicator_proc_deinit(cpu_jank_dir);
+	osi_hotthread_proc_deinit(cpu_jank_dir);
 	tasktrack_proc_deinit(cpu_jank_dir);
 	tasktrack_deinit();
 	cancel_delayed_work_sync(&grab_hotthread_work);
