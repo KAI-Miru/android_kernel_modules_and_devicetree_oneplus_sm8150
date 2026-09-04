@@ -75,6 +75,15 @@ void jank_currfreq_update_win(u64 now)
 	}
 }
 
+static inline int cpufreq_table_find_index(struct cpufreq_policy *policy,
+					     unsigned int target_freq)
+{
+	if (policy->freq_table_sorted == CPUFREQ_TABLE_SORTED_ASCENDING)
+		return cpufreq_table_find_index_al(policy, target_freq);
+
+	return cpufreq_table_find_index_dl(policy, target_freq);
+}
+
 void get_cpufreq_info(bool *is_sample)
 {
 	int cls;
