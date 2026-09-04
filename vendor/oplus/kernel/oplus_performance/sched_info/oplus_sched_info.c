@@ -23,6 +23,12 @@
 #include <linux/workqueue.h>
 #include <../kernel/sched/sched.h>
 
+#include "osi_base.h"
+#include "osi_cpuload.h"
+#include "osi_loadindicator.h"
+#include "osi_onlinecpu.h"
+#include "osi_topology.h"
+#include "osi_version.h"
 #include "tasktrack.h"
 
 #define JANK_INFO_DIR                   "jank_info"
@@ -54,6 +60,8 @@ struct clm_cpu_sample {
 
 static struct proc_dir_entry *jank_dir;
 static struct proc_dir_entry *cpu_jank_dir;
+bool jankinfo_init;
+EXPORT_SYMBOL(jankinfo_init);
 static DEFINE_MUTEX(clm_lock);
 static struct delayed_work clm_monitor_work;
 static struct delayed_work grab_hotthread_work;
@@ -342,6 +350,10 @@ static int __init jank_info_init(void)
 	bool tasktrack_proc_ready = false;
 	int ret;
 
+	cluster_init();
+	jank_cpuload_init();
+	jank_onlinecpu_reset();
+
 	INIT_DELAYED_WORK(&clm_monitor_work, clm_monitor_workfn);
 	INIT_DELAYED_WORK(&grab_hotthread_work, grab_hotthread_workfn);
 
@@ -392,8 +404,23 @@ static int __init jank_info_init(void)
 	if (ret)
 		goto err_proc;
 	tasktrack_proc_ready = true;
+	entry = jank_load_indicator_proc_init(cpu_jank_dir);
+	if (!entry)
+		goto err_proc;
+	entry = jank_cpuload_proc_init(cpu_jank_dir);
+	if (!entry)
+		goto err_load_indicator;
+	entry = jank_version_proc_init(cpu_jank_dir);
+	if (!entry)
+		goto err_cpuload;
+	jankinfo_init = true;
 
 	return 0;
+
+err_cpuload:
+	jank_cpuload_proc_deinit(cpu_jank_dir);
+err_load_indicator:
+	jank_load_indicator_proc_deinit(cpu_jank_dir);
 
 err_proc:
 	if (tasktrack_proc_ready)
@@ -412,6 +439,10 @@ err_jank_dir:
 
 static void __exit jank_info_exit(void)
 {
+	jankinfo_init = false;
+	jank_version_proc_deinit(cpu_jank_dir);
+	jank_cpuload_proc_deinit(cpu_jank_dir);
+	jank_load_indicator_proc_deinit(cpu_jank_dir);
 	tasktrack_proc_deinit(cpu_jank_dir);
 	tasktrack_deinit();
 	cancel_delayed_work_sync(&grab_hotthread_work);
