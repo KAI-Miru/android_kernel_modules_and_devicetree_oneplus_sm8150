@@ -31,7 +31,7 @@
 
 #define JANK_INFO_DIR                   "jank_info"
 #define JANK_INFO_PROC_NODE             "cpu_jank_info"
-#define PROC_NUMBUF                     32
+#define CLM_PROC_NUMBUF                 32
 
 /*
  * ColorOS encodes one mux selector above bit 7 and its enable state in bit 0.
@@ -180,7 +180,7 @@ static void grab_hotthread_workfn(struct work_struct *work)
 static ssize_t clm_value_read(unsigned int *value, char __user *buf,
 		size_t count, loff_t *ppos)
 {
-	char buffer[PROC_NUMBUF];
+	char buffer[CLM_PROC_NUMBUF];
 	size_t len;
 
 	mutex_lock(&clm_lock);
@@ -192,7 +192,7 @@ static ssize_t clm_value_read(unsigned int *value, char __user *buf,
 static ssize_t clm_value_write(unsigned int *value, const char __user *buf,
 		size_t count)
 {
-	char buffer[PROC_NUMBUF];
+	char buffer[CLM_PROC_NUMBUF];
 	unsigned int value_in;
 	int err;
 
@@ -278,7 +278,7 @@ static ssize_t proc_clm_mux_switch_read(struct file *file, char __user *buf,
 static ssize_t proc_clm_mux_switch_write(struct file *file,
 		const char __user *buf, size_t count, loff_t *ppos)
 {
-	char buffer[PROC_NUMBUF];
+	char buffer[CLM_PROC_NUMBUF];
 	unsigned int state;
 	unsigned int function_bits;
 	unsigned int index;
