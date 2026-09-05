@@ -1899,8 +1899,9 @@ static unsigned long real_scale_rt_capacity(int cpu)
 	if (unlikely(used >= SCHED_CAPACITY_SCALE))
 		return 1;
 
-	return (max * (SCHED_CAPACITY_SCALE - used)) >>
-		SCHED_CAPACITY_SHIFT;
+	return max_t(unsigned long, 1,
+		(max * (SCHED_CAPACITY_SCALE - used)) >>
+		SCHED_CAPACITY_SHIFT);
 #endif
 }
 
