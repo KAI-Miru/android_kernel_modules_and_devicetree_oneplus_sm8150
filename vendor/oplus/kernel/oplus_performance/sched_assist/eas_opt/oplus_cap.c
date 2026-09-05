@@ -112,6 +112,15 @@ static int oplus_group_id(struct task_struct *task)
 	return id;
 }
 
+static int oplus_cfs_rq_cpu(struct cfs_rq *cfs_rq)
+{
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	return cpu_of(cfs_rq->rq);
+#else
+	return cpu_of(container_of(cfs_rq, struct rq, cfs));
+#endif
+}
+
 static unsigned long oplus_task_util(struct task_struct *task)
 {
 	unsigned long util = READ_ONCE(task->se.avg.util_avg);
@@ -182,7 +191,7 @@ void oplus_eas_place_entity(struct cfs_rq *cfs_rq,
 	if (!READ_ONCE(sa_adjust_group_enable) || initial ||
 	    !oplus_entity_is_task(se))
 		return;
-	cluster = oplus_cluster_id(cpu_of(rq_of(cfs_rq)));
+	cluster = oplus_cluster_id(oplus_cfs_rq_cpu(cfs_rq));
 	if (cluster < 0)
 		return;
 	multiplier = READ_ONCE(oplus_cap_multiple[cluster]);
