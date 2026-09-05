@@ -1854,9 +1854,6 @@ static unsigned long real_scale_rt_capacity(int cpu)
 	struct rq *rq = cpu_rq(cpu);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 	unsigned long max = arch_scale_cpu_capacity(cpu);
-#else
-	unsigned long max = arch_scale_cpu_capacity(NULL, cpu);
-#endif
 	unsigned long used, free;
 	unsigned long irq;
 
@@ -1880,6 +1877,31 @@ static unsigned long real_scale_rt_capacity(int cpu)
 	free = max - used;
 
 	return real_scale_irq_capacity(free, irq, max);
+#else
+	unsigned long max = READ_ONCE(rq->cpu_capacity_orig);
+	u64 total, used, age_stamp, avg;
+	s64 delta;
+
+	/*
+	 * H.40's 4.14 scheduler predates rq->avg_rt/avg_dl.  Its native
+	 * scale_rt_capacity() accounts RT, deadline and IRQ runtime together in
+	 * rq->rt_avg.  Reuse that signal, then convert the remaining 0..1024
+	 * fraction to this CPU's (possibly VT-adjusted) original capacity.
+	 */
+	age_stamp = READ_ONCE(rq->age_stamp);
+	avg = READ_ONCE(rq->rt_avg);
+	delta = __rq_clock_broken(rq) - age_stamp;
+	if (unlikely(delta < 0))
+		delta = 0;
+
+	total = sched_avg_period() + delta;
+	used = div_u64(avg, total);
+	if (unlikely(used >= SCHED_CAPACITY_SCALE))
+		return 1;
+
+	return (max * (SCHED_CAPACITY_SCALE - used)) >>
+		SCHED_CAPACITY_SHIFT;
+#endif
 }
 
 inline unsigned long op_capacity_of(int cpu)
