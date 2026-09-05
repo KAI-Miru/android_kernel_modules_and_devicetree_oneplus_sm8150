@@ -137,7 +137,8 @@ static unsigned long oplus_cpu_util_without(int cpu, struct task_struct *task)
 	unsigned long task_util;
 
 	if (cpu != task_cpu(task) || !READ_ONCE(task->se.avg.last_update_time))
-		return max(util, READ_ONCE(cfs_rq->avg.util_est.enqueued));
+		return max_t(unsigned long, util,
+			     READ_ONCE(cfs_rq->avg.util_est.enqueued));
 
 	task_util = READ_ONCE(task->se.avg.util_avg);
 	util -= min(util, task_util);
