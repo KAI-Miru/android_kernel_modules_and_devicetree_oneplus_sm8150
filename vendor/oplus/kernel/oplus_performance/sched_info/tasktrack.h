@@ -11,9 +11,12 @@
 
 #include <linux/proc_fs.h>
 
+struct task_struct;
+
 int tasktrack_init(void);
 void tasktrack_deinit(void);
 int tasktrack_proc_init(struct proc_dir_entry *parent);
 void tasktrack_proc_deinit(struct proc_dir_entry *parent);
+void jankinfo_ux_throttle_tick(struct task_struct *task);
 
 #endif /* _MIRU_CPU_JANK_TASKTRACK_H */

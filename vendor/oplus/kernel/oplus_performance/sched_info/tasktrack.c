@@ -11,9 +11,12 @@
  *   1. userspace enabled task tracking; and
  *   2. at least one PID is being tracked.
  *
- * Therefore the normal phone path has no task-track scheduler callback.
+ * The only scheduler-tick callback is the Wave 13 UX-throttle producer.  Its
+ * unarmed path is limited to lock-free enable/PID checks, and full accounting
+ * remains bounded to the at-most-four explicitly selected tasks.
  */
 #include <linux/errno.h>
+#include <linux/cpufreq.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
@@ -28,6 +31,7 @@
 #include <linux/uaccess.h>
 #include <trace/events/sched.h>
 
+#include <linux/sched_assist/sched_assist_common.h>
 #include "tasktrack.h"
 
 #define TASKTRACK_MAX_TASKS		4
@@ -38,6 +42,8 @@
 #define TASKTRACK_CALLSTACK_COUNT	64
 #define TASKTRACK_CALLSTACK_DEPTH	4
 #define TASKTRACK_CALLSTACK_THRESHOLD_NS	50000000ULL
+#define TASKTRACK_UX_THROTTLE_COUNT	64
+#define TASKTRACK_UX_EXEC_SLICE_NS	4000000ULL
 
 /*
  * Keep the OP9R column order.  H.40 can account running, runnable and
@@ -66,6 +72,8 @@ struct tasktrack_entry {
 	u64 state_since_ns;
 	u64 window_id[TASKTRACK_WINDOW_COUNT];
 	u64 time[TASKTRACK_WINDOW_COUNT][TASKTRACK_TRACE_COUNT];
+	u64 ux_exec_baseline;
+	u64 ux_total_exec;
 };
 
 struct tasktrack_event {
@@ -81,6 +89,15 @@ struct tasktrack_callstack {
 	struct timespec64 timestamp;
 };
 
+struct tasktrack_ux_throttle {
+	u8 core_id;
+	pid_t pid;
+	u32 freq;
+	u32 max_freq;
+	struct timespec64 timestamp;
+	char comm[TASK_COMM_LEN];
+};
+
 static DEFINE_MUTEX(tasktrack_control_lock);
 static DEFINE_MUTEX(tasktrack_event_read_lock);
 static DEFINE_RAW_SPINLOCK(tasktrack_lock);
@@ -92,9 +109,12 @@ static struct tasktrack_event tasktrack_iowait_events[TASKTRACK_EVENT_COUNT];
 static struct tasktrack_event tasktrack_event_snapshot[TASKTRACK_EVENT_COUNT];
 static struct tasktrack_callstack tasktrack_callstacks[TASKTRACK_CALLSTACK_COUNT];
 static struct tasktrack_callstack tasktrack_callstack_snapshot[TASKTRACK_CALLSTACK_COUNT];
+static struct tasktrack_ux_throttle tasktrack_ux_throttle_events[TASKTRACK_UX_THROTTLE_COUNT];
+static struct tasktrack_ux_throttle tasktrack_ux_throttle_snapshot[TASKTRACK_UX_THROTTLE_COUNT];
 static u64 tasktrack_latency_sequence;
 static u64 tasktrack_iowait_sequence;
 static u64 tasktrack_callstack_sequence;
+static u64 tasktrack_ux_throttle_sequence;
 static bool tasktrack_enabled;
 static bool tasktrack_hooked;
 static bool tasktrack_active;
@@ -143,6 +163,103 @@ static bool tasktrack_pid_maybe_tracked(pid_t pid)
 	}
 
 	return false;
+}
+
+/*
+ * Match the enabled OP9R UX-priority execution budgets without changing the
+ * H.40 scheduler's existing task-selection policy.  This producer is active
+ * only for the at-most-four PIDs explicitly armed through task_track.
+ */
+static u64 tasktrack_ux_exec_limit_ns(struct task_struct *task)
+{
+	u64 limit = TASKTRACK_UX_EXEC_SLICE_NS;
+	int ux_state = READ_ONCE(task->ux_state);
+
+	if (READ_ONCE(task->ux_im_flag) == IM_FLAG_SS_LOCK_OWNER &&
+		(ux_state & SA_TYPE_LISTPICK))
+		return limit;
+
+	if (sched_assist_scene(SA_LAUNCH) && !(ux_state & SA_TYPE_INHERIT))
+		return limit * 25;
+	if (ux_state & SA_TYPE_ANIMATOR)
+		return limit * 8;
+	if (ux_state & SA_TYPE_LIGHT)
+		return limit * 2;
+	if (ux_state & SA_TYPE_HEAVY)
+		return limit * 8;
+	if (ux_state & SA_TYPE_LISTPICK)
+		return limit * 25;
+
+	return limit;
+}
+
+void jankinfo_ux_throttle_tick(struct task_struct *task)
+{
+	struct tasktrack_ux_throttle *event;
+	struct tasktrack_entry *entry;
+	struct cpufreq_policy *policy;
+	unsigned long flags;
+	unsigned int cpu;
+	unsigned int freq = 0;
+	unsigned int max_freq = 0;
+	u64 delta;
+	u64 runtime;
+
+	if (!task || !READ_ONCE(tasktrack_active) ||
+		!tasktrack_pid_maybe_tracked(task->pid))
+		return;
+
+	cpu = task_cpu(task);
+	policy = cpufreq_cpu_get(cpu);
+	if (policy) {
+		freq = policy->cur;
+		max_freq = policy->max;
+		cpufreq_cpu_put(policy);
+	}
+
+	runtime = READ_ONCE(task->se.sum_exec_runtime);
+	raw_spin_lock_irqsave(&tasktrack_lock, flags);
+	if (!READ_ONCE(tasktrack_active))
+		goto out;
+
+	entry = tasktrack_find_locked(task->pid);
+	if (!entry)
+		goto out;
+
+	if (!test_task_ux(task)) {
+		entry->ux_exec_baseline = runtime;
+		entry->ux_total_exec = 0;
+		goto out;
+	}
+
+	if (!entry->ux_exec_baseline || runtime < entry->ux_exec_baseline) {
+		entry->ux_exec_baseline = runtime;
+		entry->ux_total_exec = 0;
+		goto out;
+	}
+
+	delta = runtime - entry->ux_exec_baseline;
+	if (delta < TASKTRACK_UX_EXEC_SLICE_NS)
+		goto out;
+
+	entry->ux_exec_baseline = runtime;
+	entry->ux_total_exec += delta;
+	if (entry->ux_total_exec <= tasktrack_ux_exec_limit_ns(task))
+		goto out;
+
+	event = &tasktrack_ux_throttle_events[tasktrack_ux_throttle_sequence &
+		(TASKTRACK_UX_THROTTLE_COUNT - 1)];
+	memset(event, 0, sizeof(*event));
+	event->core_id = cpu;
+	event->pid = task->pid;
+	event->freq = freq;
+	event->max_freq = max_freq;
+	ktime_get_real_ts64(&event->timestamp);
+	memcpy(event->comm, task->comm, TASK_COMM_LEN);
+	event->comm[TASK_COMM_LEN - 1] = '\0';
+	tasktrack_ux_throttle_sequence++;
+out:
+	raw_spin_unlock_irqrestore(&tasktrack_lock, flags);
 }
 
 static void tasktrack_add_interval_locked(struct tasktrack_entry *entry,
@@ -310,6 +427,10 @@ static void tasktrack_sched_switch(void *unused, bool preempt,
 	if (entry) {
 		next_prev_state = tasktrack_sleep_state(prev);
 		tasktrack_set_state_locked(entry, prev, next_prev_state, now_ns);
+		if (next_prev_state != TASKTRACK_RUNNABLE) {
+			entry->ux_exec_baseline = prev->se.sum_exec_runtime;
+			entry->ux_total_exec = 0;
+		}
 	}
 
 	entry = tasktrack_find_locked(next->pid);
@@ -400,9 +521,12 @@ static void tasktrack_clear_entries(void)
 	memset(tasktrack_latency_events, 0, sizeof(tasktrack_latency_events));
 	memset(tasktrack_iowait_events, 0, sizeof(tasktrack_iowait_events));
 	memset(tasktrack_callstacks, 0, sizeof(tasktrack_callstacks));
+	memset(tasktrack_ux_throttle_events, 0,
+		sizeof(tasktrack_ux_throttle_events));
 	tasktrack_latency_sequence = 0;
 	tasktrack_iowait_sequence = 0;
 	tasktrack_callstack_sequence = 0;
+	tasktrack_ux_throttle_sequence = 0;
 	raw_spin_unlock_irqrestore(&tasktrack_lock, flags);
 }
 
@@ -785,6 +909,46 @@ static const struct file_operations tasktrack_iowait_fops = {
 	.release = single_release,
 };
 
+static int tasktrack_ux_throttle_proc_show(struct seq_file *m, void *v)
+{
+	struct tasktrack_ux_throttle *event;
+	unsigned long flags;
+	int i;
+
+	mutex_lock(&tasktrack_event_read_lock);
+	raw_spin_lock_irqsave(&tasktrack_lock, flags);
+	memcpy(tasktrack_ux_throttle_snapshot, tasktrack_ux_throttle_events,
+		sizeof(tasktrack_ux_throttle_snapshot));
+	raw_spin_unlock_irqrestore(&tasktrack_lock, flags);
+
+	for (i = 0; i < TASKTRACK_UX_THROTTLE_COUNT; i++) {
+		event = &tasktrack_ux_throttle_snapshot[i];
+		seq_printf(m, "%d,%s,%llu.%lu,%u,%u,%u\n",
+			event->pid, event->comm,
+			(unsigned long long)event->timestamp.tv_sec,
+			(unsigned long)event->timestamp.tv_nsec,
+			event->core_id, event->freq, event->max_freq);
+	}
+	seq_putc(m, '\n');
+	mutex_unlock(&tasktrack_event_read_lock);
+
+	return 0;
+}
+
+static int tasktrack_ux_throttle_proc_open(struct inode *inode,
+		struct file *file)
+{
+	return single_open(file, tasktrack_ux_throttle_proc_show,
+		inode->i_private);
+}
+
+static const struct file_operations tasktrack_ux_throttle_fops = {
+	.open = tasktrack_ux_throttle_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 int tasktrack_proc_init(struct proc_dir_entry *parent)
 {
 	struct proc_dir_entry *entry;
@@ -815,8 +979,15 @@ int tasktrack_proc_init(struct proc_dir_entry *parent)
 	if (!entry)
 		goto err_iowait;
 
+	entry = proc_create("ux_throttle", 0444, parent,
+			&tasktrack_ux_throttle_fops);
+	if (!entry)
+		goto err_ux_throttle;
+
 	return 0;
 
+err_ux_throttle:
+	remove_proc_entry("sched_iowait", parent);
 err_iowait:
 	remove_proc_entry("sched_latency", parent);
 err_latency:
@@ -829,6 +1000,7 @@ err_callstack:
 
 void tasktrack_proc_deinit(struct proc_dir_entry *parent)
 {
+	remove_proc_entry("ux_throttle", parent);
 	remove_proc_entry("sched_iowait", parent);
 	remove_proc_entry("sched_latency", parent);
 	remove_proc_entry("callstack", parent);
