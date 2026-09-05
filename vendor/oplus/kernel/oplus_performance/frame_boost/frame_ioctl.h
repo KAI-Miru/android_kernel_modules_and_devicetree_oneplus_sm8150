@@ -8,6 +8,10 @@
 
 #define FRAMEBOOST_PROC_NODE "oplus_frame_boost"
 #define INVALID_VAL (INT_MIN)
+/* "def": restore the last system tuning profile. */
+#define STUNE_DEF 0x444546
+/* "SF": apply SurfaceFlinger-specific tuning without replacing that profile. */
+#define STUNE_SF 0x5346
 
 enum BoostStage {
 	BOOST_NONE = 0,
@@ -103,6 +107,10 @@ struct ofb_stune_data {
 	int ed_task_boost_max_duration;
 	int ed_task_boost_max_util;
 	int ed_task_boost_timeout_duration;
+	int boost_sf_freq_nongpu;
+	int boost_sf_migr_nongpu;
+	int boost_sf_freq_gpu;
+	int boost_sf_migr_gpu;
 };
 
 #define OFB_MAGIC 0XDE
@@ -162,4 +170,5 @@ struct ofb_frame_util_info {
 	_IOWR(OFB_EXTRA_MAGIC, NOTIFY_FRAME_START, struct ofb_frame_util_info)
 
 extern int frame_ioctl_init(void);
+extern int frame_ioctl_exit(void);
 #endif /* _SCHED_ASSIST_IOCTL_H_ */

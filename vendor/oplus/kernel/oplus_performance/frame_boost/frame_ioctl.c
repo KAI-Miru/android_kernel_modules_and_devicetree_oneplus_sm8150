@@ -19,8 +19,28 @@
 
 #define IM_FLAG_SURFACEFLINGER (1)
 #define IM_FLAG_RENDERENGINE (3)
+#define SYSTEM_UID 1000
 
 static struct proc_dir_entry *frame_boost_proc;
+static struct ofb_stune_data last_sys_stune_data = {
+	.level = -1,
+	.boost_freq = -1,
+	.boost_migr = -1,
+	.vutil_margin = 0xFF,
+	.util_frame_rate = -1,
+	.util_min_threshold = -1,
+	.util_min_obtain_view = -1,
+	.util_min_timeout = -1,
+	.ed_task_boost_mid_duration = -1,
+	.ed_task_boost_mid_util = -1,
+	.ed_task_boost_max_duration = -1,
+	.ed_task_boost_max_util = -1,
+	.ed_task_boost_timeout_duration = -1,
+	.boost_sf_freq_nongpu = -1,
+	.boost_sf_migr_nongpu = -1,
+	.boost_sf_freq_gpu = -1,
+	.boost_sf_migr_gpu = -1,
+};
 /*
  * Stage 5 supplies Android 14 IM classification through sched_assist's
  * task->ux_im_flag.  The donor's CONFIG_OPLUS_FEATURE_IM/task->im_flag pair
@@ -164,6 +184,7 @@ static long fbg_set_task_preferred_cluster(void __user *uarg)
 static long fbg_add_task_to_group(void __user *uarg)
 {
 	struct ofb_key_thread_info info;
+	unsigned int thread_num;
 	unsigned int i;
 
 	if (uarg == NULL)
@@ -174,7 +195,11 @@ static long fbg_add_task_to_group(void __user *uarg)
 		return -EFAULT;
 	}
 
-	for (i = 0; i < info.thread_num; i++)
+	thread_num = info.thread_num;
+	if (thread_num > MAX_KEY_THREAD_NUM)
+		thread_num = MAX_KEY_THREAD_NUM;
+
+	for (i = 0; i < thread_num; i++)
 		add_task_to_game_frame_group(info.tid[i], info.add);
 
 	return 0;
@@ -283,6 +308,42 @@ static long ofb_handle_sf_msg_trans(void __user *uarg, unsigned int cmd)
 	return 0;
 }
 
+static void setup_stune_data(struct ofb_stune_data *stune_data)
+{
+	if (stune_data->boost_freq >= 0 && stune_data->boost_freq <= 100)
+		fbg_set_stune_boost(stune_data->boost_freq, BOOST_DEF_FREQ);
+
+	if (stune_data->boost_migr >= 0 && stune_data->boost_migr <= 100)
+		fbg_set_stune_boost(stune_data->boost_migr, BOOST_DEF_MIGR);
+
+	if (stune_data->util_frame_rate >= 0 && stune_data->util_frame_rate <= 240)
+		fbg_set_stune_boost(stune_data->util_frame_rate, BOOST_UTIL_FRAME_RATE);
+
+	if (stune_data->util_min_threshold >= 0 && stune_data->util_min_threshold <= 1024)
+		fbg_set_stune_boost(stune_data->util_min_threshold, BOOST_UTIL_MIN_THRESHOLD);
+
+	if (stune_data->util_min_obtain_view >= 0 && stune_data->util_min_obtain_view <= 1024)
+		fbg_set_stune_boost(stune_data->util_min_obtain_view, BOOST_UTIL_MIN_OBTAIN_VIEW);
+
+	if (stune_data->util_min_timeout >= 0 && stune_data->util_min_timeout <= 1024)
+		fbg_set_stune_boost(stune_data->util_min_timeout, BOOST_UTIL_MIN_TIMEOUT);
+
+	if (stune_data->vutil_margin >= -16 && stune_data->vutil_margin <= 16)
+		set_frame_margin(stune_data->vutil_margin);
+
+	if (stune_data->boost_sf_freq_nongpu >= 0 && stune_data->boost_sf_freq_nongpu <= 100)
+		fbg_set_stune_boost(stune_data->boost_sf_freq_nongpu, BOOST_SF_FREQ_NONGPU);
+
+	if (stune_data->boost_sf_migr_nongpu >= 0 && stune_data->boost_sf_migr_nongpu <= 100)
+		fbg_set_stune_boost(stune_data->boost_sf_migr_nongpu, BOOST_SF_MIGR_NONGPU);
+
+	if (stune_data->boost_sf_freq_gpu >= 0 && stune_data->boost_sf_freq_gpu <= 100)
+		fbg_set_stune_boost(stune_data->boost_sf_freq_gpu, BOOST_SF_FREQ_GPU);
+
+	if (stune_data->boost_sf_migr_gpu >= 0 && stune_data->boost_sf_migr_gpu <= 100)
+		fbg_set_stune_boost(stune_data->boost_sf_migr_gpu, BOOST_SF_MIGR_GPU);
+}
+
 static long ofb_sys_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	long ret = 0;
@@ -332,34 +393,37 @@ static long ofb_sys_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 
 		break;
 	case CMD_ID_BOOST_STUNE:
+	{
+		int uid;
+
 		if (copy_from_user(&stune_data, uarg, sizeof(stune_data))) {
 			ofb_debug("invalid address");
 			return -EFAULT;
 		}
-		if ((stune_data.boost_freq >= 0) && (stune_data.boost_freq <= 100))
-			stune_boost[BOOST_DEF_FREQ] = stune_data.boost_freq;
 
-		if ((stune_data.boost_migr >= 0) && (stune_data.boost_migr <= 100))
-			stune_boost[BOOST_DEF_MIGR] = stune_data.boost_migr;
-
-		if ((stune_data.util_frame_rate >= 0) && (stune_data.util_frame_rate <= 240))
-			stune_boost[BOOST_UTIL_FRAME_RATE] = stune_data.util_frame_rate;
-
-		if ((stune_data.util_min_threshold >= 0) && (stune_data.util_min_threshold <= 1024))
-			stune_boost[BOOST_UTIL_MIN_THRESHOLD] = stune_data.util_min_threshold;
-
-		if ((stune_data.util_min_obtain_view >= 0) && (stune_data.util_min_obtain_view <= 1024))
-			stune_boost[BOOST_UTIL_MIN_OBTAIN_VIEW] = stune_data.util_min_obtain_view;
-
-		if ((stune_data.util_min_timeout >= 0) && (stune_data.util_min_timeout <= 1024))
-			stune_boost[BOOST_UTIL_MIN_TIMEOUT] = stune_data.util_min_timeout;
-
-		if ((stune_data.vutil_margin >= -16) && (stune_data.vutil_margin <= 16))
-			set_frame_margin(stune_data.vutil_margin);
+		uid = task_uid(current).val;
+		if (uid == SYSTEM_UID) {
+			if (stune_data.boost_freq == STUNE_DEF) {
+				setup_stune_data(&last_sys_stune_data);
+			} else if (stune_data.boost_freq == STUNE_SF) {
+				setup_stune_data(&stune_data);
+			} else {
+				memcpy(&last_sys_stune_data, &stune_data,
+				       sizeof(last_sys_stune_data));
+				setup_stune_data(&stune_data);
+			}
+		} else if (stune_data.boost_freq == STUNE_DEF) {
+			setup_stune_data(&last_sys_stune_data);
+		} else {
+			setup_stune_data(&stune_data);
+		}
 
 		break;
+	}
 	case CMD_ID_BOOST_STUNE_GPU: {
 		bool boost_allow = true;
+		int boost_freq;
+		int boost_migr;
 
 		if (copy_from_user(&stune_data, uarg, sizeof(stune_data))) {
 			ofb_debug("invalid address");
@@ -372,11 +436,18 @@ static long ofb_sys_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		if (check_last_compose_time(stune_data.level) && !stune_data.level)
 			boost_allow = false;
 
-		if (boost_allow && stune_data.boost_migr != INVALID_VAL)
-			stune_boost[BOOST_SF_MIGR] = stune_data.boost_migr;
+		if (boost_allow) {
+			boost_freq = fbg_get_stune_boost(BOOST_SF_FREQ_GPU);
+			boost_migr = fbg_get_stune_boost(BOOST_SF_MIGR_GPU);
+		}
 
-		if (boost_allow && stune_data.boost_freq != INVALID_VAL)
-			stune_boost[BOOST_SF_FREQ] = stune_data.boost_freq;
+		if (!stune_data.level) {
+			boost_freq = fbg_get_stune_boost(BOOST_SF_FREQ_NONGPU);
+			boost_migr = fbg_get_stune_boost(BOOST_SF_MIGR_NONGPU);
+		}
+
+		fbg_set_stune_boost(boost_freq, BOOST_SF_FREQ);
+		fbg_set_stune_boost(boost_migr, BOOST_SF_MIGR);
 		}
 		break;
 	default:
