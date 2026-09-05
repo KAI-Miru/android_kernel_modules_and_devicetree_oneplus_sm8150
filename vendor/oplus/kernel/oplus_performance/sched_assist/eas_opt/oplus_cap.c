@@ -179,7 +179,8 @@ void oplus_eas_place_entity(struct cfs_rq *cfs_rq,
 	int cluster;
 	int group;
 
-	if (!READ_ONCE(sa_adjust_group_enable) || initial || !entity_is_task(se))
+	if (!READ_ONCE(sa_adjust_group_enable) || initial ||
+	    !oplus_entity_is_task(se))
 		return;
 	cluster = oplus_cluster_id(cpu_of(rq_of(cfs_rq)));
 	if (cluster < 0)
@@ -438,6 +439,7 @@ static ssize_t group_adjust_read(struct file *file, char __user *buffer,
 	length += scnprintf(output + length, sizeof(output) - length,
 			"task_util_thresh:%d\nadjust_std_vtime_slice:%llu\n",
 			READ_ONCE(group_adjust.task_compensate),
+			(unsigned long long)
 			READ_ONCE(group_adjust.adjust_std_vtime_slice));
 	return simple_read_from_buffer(buffer, count, ppos, output, length);
 }

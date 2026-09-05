@@ -7,6 +7,12 @@
 #define OPLUS_CLUSTERS 5
 #define OPLUS_CPUS 8
 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+#define oplus_entity_is_task(se) (!(se)->my_q)
+#else
+#define oplus_entity_is_task(se) (1)
+#endif
+
 extern int eas_opt_enable;
 extern int eas_opt_debug_enable;
 extern int force_apply_ocap_enable;
