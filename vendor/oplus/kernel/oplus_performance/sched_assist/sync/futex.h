@@ -4,8 +4,8 @@
  */
 
 
-#ifndef _OPLUS_SCHED_FUTEX_H_
-#define _OPLUS_SCHED_FUTEX_H_
+#ifndef _OPLUS_LOCKING_STRATEGY_FUTEX_H_
+#define _OPLUS_LOCKING_STRATEGY_FUTEX_H_
 
 #include <linux/futex.h>
 
@@ -26,5 +26,4 @@ void locking_vh_futex_wake_this(int ret, int nr_wake, int target_nr, struct task
 void locking_vh_futex_wake_up_q_finish(int nr_wake, int target_nr);
 void init_task_lkinfo(struct task_struct *p);
 
-#endif /* _OPLUS_SCHED_FUTEX_H_ */
-
+#endif /* _OPLUS_LOCKING_STRATEGY_FUTEX_H_ */

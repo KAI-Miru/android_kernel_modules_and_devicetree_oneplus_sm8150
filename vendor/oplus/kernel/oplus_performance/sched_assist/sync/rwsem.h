@@ -4,8 +4,8 @@
  */
 
 
-#ifndef _OPLUS_SCHED_RWSEM_H_
-#define _OPLUS_SCHED_RWSEM_H_
+#ifndef _OPLUS_LOCKING_STRATEGY_RWSEM_H_
+#define _OPLUS_LOCKING_STRATEGY_RWSEM_H_
 
 #include <linux/rwsem.h>
 
@@ -42,5 +42,4 @@ void locking_vh_rwsem_write_wait_start(struct rw_semaphore *sem);
 void locking_vh_rwsem_write_wait_finish(struct rw_semaphore *sem);
 void locking_vh_alter_rwsem_list_add(struct rwsem_waiter *waiter,
 		struct rw_semaphore *sem, bool *already_on_list);
-#endif /* _OPLUS_SCHED_RWSEM_H_ */
-
+#endif /* _OPLUS_LOCKING_STRATEGY_RWSEM_H_ */

@@ -4,8 +4,8 @@
  */
 
 
-#ifndef _OPLUS_SCHED_MUTEX_H_
-#define _OPLUS_SCHED_MUTEX_H_
+#ifndef _OPLUS_LOCKING_STRATEGY_MUTEX_H_
+#define _OPLUS_LOCKING_STRATEGY_MUTEX_H_
 
 #include <linux/mutex.h>
 
@@ -32,5 +32,4 @@ void locking_vh_mutex_opt_spin_start(struct mutex *lock, bool *time_out, int *cn
 void locking_vh_mutex_opt_spin_finish(struct mutex *lock, bool taken);
 void locking_vh_mutex_can_spin_on_owner(struct mutex *lock, int *retval);
 #endif
-#endif /* _OPLUS_SCHED_MUTEX_H_ */
-
+#endif /* _OPLUS_LOCKING_STRATEGY_MUTEX_H_ */
