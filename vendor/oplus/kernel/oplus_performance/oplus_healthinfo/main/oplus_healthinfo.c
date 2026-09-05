@@ -12,6 +12,9 @@
 #ifdef CONFIG_OPLUS_MEM_MONITOR
 #include <linux/oplus_healthinfo/memory_monitor.h>
 #endif
+#ifdef CONFIG_OPLUS_ATHENA_MEMORY_ABI
+#include <linux/oplus_healthinfo/allocator_usage.h>
+#endif
 #ifdef OPLUS_FEATURE_UFSPLUS
 #if defined(CONFIG_UFSFEATURE)
 #include "../../../drivers/scsi/oufs/ufsfeature.h"
@@ -1045,6 +1048,12 @@ static int __init oplus_healthinfo_init(void)
 #ifdef CONFIG_KMALLOC_DEBUG
 	/* create the kmalloc_debug file node. */
 	ret = create_kmalloc_debug(oplus_healthinfo);
+	if (ret)
+		goto ERROR_INIT_VERSION;
+#endif
+
+#ifdef CONFIG_OPLUS_ATHENA_MEMORY_ABI
+	ret = create_athena_memory_abi(oplus_healthinfo);
 	if (ret)
 		goto ERROR_INIT_VERSION;
 #endif
