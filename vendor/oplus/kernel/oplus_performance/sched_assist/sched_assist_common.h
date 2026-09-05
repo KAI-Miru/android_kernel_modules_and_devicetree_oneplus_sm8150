@@ -175,6 +175,8 @@ extern void set_ux_task_to_prefer_cpu_v1(struct task_struct *task, int *orig_tar
 extern bool im_mali(struct task_struct *p);
 extern bool cgroup_check_set_sched_assist_boost(struct task_struct *p);
 extern int get_st_group_id(struct task_struct *task);
+extern void oplus_boost_kill_signal(int sig, struct task_struct *cur,
+		struct task_struct *task);
 extern void cgroup_set_sched_assist_boost_task(struct task_struct *p);
 extern bool test_task_identify_ux(struct task_struct *task, int id_type_ux);
 #ifdef CONFIG_SCHED_WALT

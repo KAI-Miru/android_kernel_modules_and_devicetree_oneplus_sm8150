@@ -52,6 +52,9 @@ static unsigned int top_app_type;
 static unsigned int param_ux_debug;
 module_param_named(debug, param_ux_debug, uint, 0644);
 
+static unsigned int boost_kill = 1;
+module_param_named(boost_kill, boost_kill, uint, 0644);
+
 struct ux_util_record sf_target[SF_GROUP_COUNT] = {
 {"surfaceflinger", 0, 0},
 {"RenderEngine", 0, 0},
@@ -1429,6 +1432,28 @@ int get_st_group_id(struct task_struct *task)
 	return 0;
 #endif
 }
+
+void oplus_boost_kill_signal(int sig, struct task_struct *cur,
+		struct task_struct *task)
+{
+	struct task_struct *thread;
+
+	if (!task || sig != SIGKILL || !READ_ONCE(boost_kill) ||
+	    get_st_group_id(task) != 3 || task->group_leader != task)
+		return;
+
+	rcu_read_lock();
+	thread = task;
+	do {
+		set_user_nice(thread, -20);
+		cpumask_copy(&thread->cpus_allowed, cpu_possible_mask);
+		cpumask_copy(&thread->cpus_requested, cpu_possible_mask);
+		thread->nr_cpus_allowed = cpumask_weight(cpu_possible_mask);
+	} while_each_thread(task, thread);
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL(oplus_boost_kill_signal);
+
 void cgroup_set_sched_assist_boost_task(struct task_struct *p)
 {
 	if(cgroup_check_set_sched_assist_boost(p)) {
