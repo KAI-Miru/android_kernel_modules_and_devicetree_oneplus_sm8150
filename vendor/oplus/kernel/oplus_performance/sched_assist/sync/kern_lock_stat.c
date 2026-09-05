@@ -22,6 +22,7 @@
 #endif
 #include <trace/events/sched.h>
 #include <linux/sort.h>
+#include <linux/uaccess.h>
 
 #include <linux/sched_assist/sched_assist_common.h>
 #include "kern_lock_stat.h"
@@ -1468,4 +1469,3 @@ void  kern_lstat_exit(void)
 	top_lock_hash_exit();
 #endif
 }
-
