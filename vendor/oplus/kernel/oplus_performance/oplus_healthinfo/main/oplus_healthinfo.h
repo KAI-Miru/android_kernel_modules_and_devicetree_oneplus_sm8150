@@ -49,6 +49,7 @@ enum {
         OHM_RLIMIT_MON,
         OHM_ION_MON,
 	OHM_MEM_VMA_ALLOC_ERR,
+	OHM_BLK_MON,
         OHM_TYPE_TOTAL
 };
 
@@ -59,6 +60,18 @@ struct sched_stat_common {
         u64 total_ms;
         u64 total_cnt;
 };
+
+struct long_wait_record {
+	u32 pid;
+	u32 priv;
+	u64 timestamp;
+	u64 timestamp_ns;
+	u32 ms;
+};
+
+#define LWR_SHIFT	3
+#define LWR_MASK	((1ULL << LWR_SHIFT) - 1)
+#define LWR_SIZE	(1ULL << LWR_SHIFT)
 
 struct sched_stat_para {
         bool ctrl;
@@ -85,6 +98,14 @@ struct ion_wait_para {
 	struct sched_stat_common ux_ion_wait;
 	struct sched_stat_common fg_ion_wait;
 	struct sched_stat_common total_ion_wait;
+};
+
+struct blk_wait_para {
+	int wait_h_ms;
+	int wait_l_ms;
+	struct sched_stat_common wait_stat;
+	atomic_t lwr_index;
+	struct long_wait_record last_n_lwr[LWR_SIZE];
 };
 
 extern void ohm_schedstats_record(int sched_type, struct task_struct *task, u64 delta_ms);

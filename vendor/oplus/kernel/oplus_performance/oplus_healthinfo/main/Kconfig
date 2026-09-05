@@ -3,6 +3,13 @@ config OPLUS_HEALTHINFO
 bool "config oplus healthinfo"
 help
     define this config to init oplus healthinfo.
+config OPLUS_BLK_MONITOR
+	bool "OPlus block request latency monitor"
+	depends on OPLUS_HEALTHINFO
+	default n
+	help
+	  Collect the donor Q2I, I2D, Q2C, and D2C request-latency
+	  statistics and expose them through oplus_healthinfo.
 config CAMERA_OPT
 	bool "config camera opt"
 	default n
