@@ -126,7 +126,8 @@ static unsigned long oplus_task_util(struct task_struct *task)
 	unsigned long util = READ_ONCE(task->se.avg.util_avg);
 	struct util_est estimate = READ_ONCE(task->se.avg.util_est);
 
-	return max(util, max(estimate.ewma, estimate.enqueued & 0x7fffffff));
+	return max(util, max_t(unsigned long, estimate.ewma,
+			       estimate.enqueued & 0x7fffffff));
 }
 
 static unsigned long oplus_cpu_util_without(int cpu, struct task_struct *task)
