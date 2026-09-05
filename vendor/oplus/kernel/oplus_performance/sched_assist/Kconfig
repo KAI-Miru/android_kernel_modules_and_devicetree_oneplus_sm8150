@@ -23,3 +23,24 @@ config OPLUS_CPUFREQ_IOWAIT_PROTECT
 	default n
 	help
 	  Expose and apply the OnePlus 9R schedutil I/O-wait controls.
+
+config OPLUS_LOCKING_STRATEGY
+	bool "OnePlus 9R locking strategy"
+	depends on OPLUS_FEATURE_SCHED_ASSIST
+	default n
+	help
+	  Enable the donor mutex, rwsem, and ART futex locking strategy ABI.
+
+config OPLUS_LOCKING_OSQ
+	bool "OnePlus 9R optimistic-spin controls"
+	depends on OPLUS_LOCKING_STRATEGY
+	default n
+	help
+	  Enable the donor mutex and rwsem optimistic-spin policy controls.
+
+config OPLUS_LOCKING_MONITOR
+	bool "OnePlus 9R locking statistics monitor"
+	depends on OPLUS_LOCKING_STRATEGY
+	default n
+	help
+	  Expose the donor lock statistics and threshold control plane.
