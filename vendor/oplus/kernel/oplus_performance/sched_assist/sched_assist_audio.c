@@ -18,12 +18,15 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 
+#include <../kernel/sched/sched.h>
+
 #include "sched_assist_audio.h"
 #include "sched_assist_common.h"
 
 #define AUDIO_PROC_NUMBUF 32
 #define AUDIO_DEBUG_BUFSZ 1024
 #define AUDIO_TIMER_SLACK_NS 50000
+#define AUDIO_TASK_IDLE_EXIT_LATENCY 60
 #define AUDIO_DEBUG_MAX_PIDS 128
 
 struct audio_pid_node {
@@ -348,6 +351,19 @@ void oplus_sched_assist_audio_enqueue_hook(struct task_struct *task)
 	if (task->timer_slack_ns > AUDIO_TIMER_SLACK_NS)
 		task->timer_slack_ns = AUDIO_TIMER_SLACK_NS;
 }
+
+bool oplus_sched_assist_audio_perf_check_exit_latency(struct task_struct *task,
+						       int cpu)
+{
+	struct cpuidle_state *idle;
+
+	if (!audio_perf_status_on() || !task_is_audio(task))
+		return false;
+
+	idle = idle_get_state(cpu_rq(cpu));
+	return idle && idle->exit_latency > AUDIO_TASK_IDLE_EXIT_LATENCY;
+}
+EXPORT_SYMBOL(oplus_sched_assist_audio_perf_check_exit_latency);
 
 void oplus_sched_assist_audio_perf_set_status(int status)
 {
