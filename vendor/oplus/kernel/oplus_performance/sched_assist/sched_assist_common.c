@@ -48,8 +48,8 @@ static unsigned int top_app_type;
 
 #define S2NS_T 1000000
 
-//static int param_ux_debug = 0;
-//module_param_named(debug, param_ux_debug, int, 0644);
+static unsigned int param_ux_debug;
+module_param_named(debug, param_ux_debug, uint, 0644);
 
 struct ux_util_record sf_target[SF_GROUP_COUNT] = {
 {"surfaceflinger", 0, 0},
@@ -1228,10 +1228,10 @@ void sched_assist_systrace_pid(pid_t pid, int val, const char *fmt, ...)
 	char log[256];
 	va_list args;
 	int len;
-/*
+
 	if (likely(!param_ux_debug))
 		return;
-*/
+
 	if (unlikely(!_sched_assist_update_tracemark()))
 		return;
 

@@ -191,7 +191,7 @@ enum {
 	CGROUP_NRS,
 };
 extern int g_osi_debug;
-void osi_base_proc_init(struct proc_dir_entry *pde);
+int osi_base_proc_init(struct proc_dir_entry *pde);
 void osi_base_proc_deinit(struct proc_dir_entry *pde);
 int task_cgroup_id(struct task_struct *p);
 bool is_fg_or_topapp(struct task_struct *p);

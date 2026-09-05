@@ -23,6 +23,7 @@
 #include <linux/workqueue.h>
 #include "osi_base.h"
 #include "osi_cpuload.h"
+#include "osi_enable.h"
 #include "osi_hotthread.h"
 #include "osi_loadindicator.h"
 #include "osi_onlinecpu.h"
@@ -350,6 +351,8 @@ static const struct file_operations proc_clm_mux_switch_fops = {
 static int __init jank_info_init(void)
 {
 	struct proc_dir_entry *entry;
+	bool base_proc_ready = false;
+	bool enable_proc_ready = false;
 	bool tasktrack_proc_ready = false;
 	bool hotthread_proc_ready = false;
 	int ret;
@@ -375,6 +378,14 @@ static int __init jank_info_init(void)
 	if (ret)
 		goto err_proc;
 	hotthread_proc_ready = true;
+	ret = osi_base_proc_init(cpu_jank_dir);
+	if (ret)
+		goto err_proc;
+	base_proc_ready = true;
+	entry = jank_enable_proc_init(cpu_jank_dir);
+	if (!entry)
+		goto err_proc;
+	enable_proc_ready = true;
 
 	entry = proc_create("clm_enable", 0666, cpu_jank_dir,
 			&proc_clm_enable_fops);
@@ -431,6 +442,10 @@ err_load_indicator:
 	jank_load_indicator_proc_deinit(cpu_jank_dir);
 
 err_proc:
+	if (enable_proc_ready)
+		jank_enable_proc_deinit(cpu_jank_dir);
+	if (base_proc_ready)
+		osi_base_proc_deinit(cpu_jank_dir);
 	if (hotthread_proc_ready)
 		osi_hotthread_proc_deinit(cpu_jank_dir);
 	if (tasktrack_proc_ready)
@@ -453,6 +468,8 @@ static void __exit jank_info_exit(void)
 	jank_version_proc_deinit(cpu_jank_dir);
 	jank_cpuload_proc_deinit(cpu_jank_dir);
 	jank_load_indicator_proc_deinit(cpu_jank_dir);
+	jank_enable_proc_deinit(cpu_jank_dir);
+	osi_base_proc_deinit(cpu_jank_dir);
 	osi_hotthread_proc_deinit(cpu_jank_dir);
 	tasktrack_proc_deinit(cpu_jank_dir);
 	tasktrack_deinit();

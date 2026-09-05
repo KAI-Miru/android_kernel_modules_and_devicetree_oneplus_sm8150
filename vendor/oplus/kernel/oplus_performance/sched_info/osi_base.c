@@ -185,9 +185,9 @@ static ssize_t proc_osi_debug_read(struct file *file,
 		char __user *buf, size_t count, loff_t *ppos)
 {
 	char buffer[PROC_NUMBUF];
-	size_t len = 0;
+	size_t len;
 
-	len = snprintf(buffer, sizeof(buffer), "%d\n", g_osi_debug);
+	len = scnprintf(buffer, sizeof(buffer), "%d\n", READ_ONCE(g_osi_debug));
 	return simple_read_from_buffer(buf, count, ppos, buffer, len);
 }
 
@@ -195,21 +195,26 @@ static ssize_t proc_osi_debug_write(struct file *file,
 			const char __user *buf, size_t count, loff_t *ppos)
 {
 	char buffer[PROC_NUMBUF];
-	int err, data;
+	int data;
+	int err;
 
-	memset(buffer, 0, sizeof(buffer));
-
-	if (count > sizeof(buffer) - 1)
-		count = sizeof(buffer) - 1;
+	if (*ppos != 0 || !count)
+		return -EINVAL;
+	if (count >= sizeof(buffer))
+		return -E2BIG;
 
 	if (copy_from_user(buffer, buf, count))
 		return -EFAULT;
+	buffer[count] = '\0';
 
-	err = kstrtouint(strstrip(buffer), 0, &data);
+	err = kstrtoint(strstrip(buffer), 0, &data);
 	if (err)
 		return err;
-	g_osi_debug = data;
+	if (data < 0)
+		return -ERANGE;
+	WRITE_ONCE(g_osi_debug, data);
 
+	*ppos += count;
 	return count;
 }
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
@@ -225,15 +230,13 @@ static const struct proc_ops proc_osi_debug_operations = {
 	.proc_lseek	= default_llseek,
 };
 #endif
-void osi_base_proc_init(struct proc_dir_entry *pde)
+int osi_base_proc_init(struct proc_dir_entry *pde)
 {
-	struct proc_dir_entry *entry = NULL;
-	entry = proc_create("osi_debug", S_IRUGO,
-				pde, &proc_osi_debug_operations);
-	if (!entry) {
-		osi_err("create osi_debug fail\n");
-		return;
-	}
+	if (!proc_create("osi_debug", S_IRUGO, pde,
+			 &proc_osi_debug_operations))
+		return -ENOMEM;
+
+	return 0;
 }
 
 void osi_base_proc_deinit(struct proc_dir_entry *pde)
