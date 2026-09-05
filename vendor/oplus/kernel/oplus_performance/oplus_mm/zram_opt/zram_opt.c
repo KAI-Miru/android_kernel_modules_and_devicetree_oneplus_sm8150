@@ -11,6 +11,10 @@
 
 static int g_direct_swappiness = 60;
 static int g_swappiness = 160;
+#ifdef CONFIG_HYBRIDSWAP_SWAPD
+static int g_hybridswapd_swappiness = 200;
+extern bool free_swap_is_low(void);
+#endif
 
 struct zram_opt_ops {
 	void (*zo_set_swappiness)(void *data, int *swappiness);
@@ -20,10 +24,17 @@ struct zram_opt_ops {
 
 static void zo_set_swappiness(void *data, int *swappiness)
 {
-	if (current_is_kswapd())
+	if (current_is_kswapd()) {
 		*swappiness = g_swappiness;
-	else
+#ifdef CONFIG_HYBRIDSWAP_SWAPD
+	} else if (!strncmp(current->comm, "hybridswapd:",
+			sizeof("hybridswapd:") - 1)) {
+		*swappiness = free_swap_is_low() ? 0 :
+			g_hybridswapd_swappiness;
+#endif
+	} else {
 		*swappiness = g_direct_swappiness;
+	}
 
 	return;
 }
@@ -102,5 +113,9 @@ module_exit(zram_opt_exit);
 
 module_param_named(vm_swappiness, g_swappiness, int, S_IRUGO | S_IWUSR);
 module_param_named(direct_vm_swappiness, g_direct_swappiness, int, S_IRUGO | S_IWUSR);
+#ifdef CONFIG_HYBRIDSWAP_SWAPD
+module_param_named(hybridswapd_swappiness, g_hybridswapd_swappiness, int,
+		S_IRUGO | S_IWUSR);
+#endif
 
 MODULE_LICENSE("GPL v2");

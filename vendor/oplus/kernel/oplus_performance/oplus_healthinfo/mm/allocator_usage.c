@@ -20,6 +20,9 @@
 #define ATHENA_SWAPPINESS_MAX		200
 
 extern int direct_vm_swappiness;
+#ifdef CONFIG_HYBRIDSWAP_SWAPD
+extern int hybridswapd_swappiness;
+#endif
 
 static unsigned long athena_kmalloc_cache_bytes(struct kmem_cache *cache)
 {
@@ -95,7 +98,11 @@ static ssize_t athena_swappiness_read(struct file *file,
 			"swapd_swappiness: %d\n",
 			READ_ONCE(vm_swappiness),
 			READ_ONCE(direct_vm_swappiness),
+#ifdef CONFIG_HYBRIDSWAP_SWAPD
+			READ_ONCE(hybridswapd_swappiness));
+#else
 			READ_ONCE(vm_swappiness));
+#endif
 
 	return simple_read_from_buffer(buffer, count, ppos, output, length);
 }
@@ -132,8 +139,15 @@ static ssize_t athena_swappiness_write(struct file *file,
 	value = strstrip(input);
 	if (athena_update_swappiness(value, "vm_swappiness=", &vm_swappiness) ||
 	    athena_update_swappiness(value, "direct_swappiness=",
-				       &direct_vm_swappiness) ||
-	    athena_update_swappiness(value, "swapd_swappiness=", &vm_swappiness))
+				       &direct_vm_swappiness)
+#ifdef CONFIG_HYBRIDSWAP_SWAPD
+	    || athena_update_swappiness(value, "swapd_swappiness=",
+				       &hybridswapd_swappiness)
+#else
+	    || athena_update_swappiness(value, "swapd_swappiness=",
+				       &vm_swappiness)
+#endif
+	   )
 		return count;
 
 	return -EINVAL;
