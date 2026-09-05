@@ -13,7 +13,7 @@
 #define BLK_MIN_DEPTH_ON	16
 #define BLK_MAX_BG_DEPTH	24
 
-extern bool sysctl_uxio_io_opt;
+extern unsigned int sysctl_uxio_io_opt;
 extern bool blk_pm_allow_request(struct request *rq);
 extern struct request * smart_peek_request(struct request_queue *q);
 extern void queue_throtl_add_request(struct request_queue *q,
