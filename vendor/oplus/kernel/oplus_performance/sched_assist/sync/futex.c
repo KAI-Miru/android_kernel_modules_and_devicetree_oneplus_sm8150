@@ -4,6 +4,7 @@
  */
 
 #include <linux/sched.h>
+#include <linux/module.h>
 #include <../kernel/sched/sched.h>
 #include <linux/hrtimer.h>
 #include <linux/sched/task.h>
@@ -562,4 +563,3 @@ void init_task_lkinfo(struct task_struct *p)
 	p->lkinfo.ux_contrib = false;
 	p->lkinfo.is_block_ux = false;
 }
-
