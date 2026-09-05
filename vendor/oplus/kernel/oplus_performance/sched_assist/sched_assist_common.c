@@ -5,6 +5,7 @@
 
 
 #include <linux/version.h>
+#include <linux/moduleparam.h>
 #include <linux/sched.h>
 #include <linux/list.h>
 #include <linux/jiffies.h>
