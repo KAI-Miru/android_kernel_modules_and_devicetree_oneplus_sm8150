@@ -14,11 +14,7 @@
 
 unsigned int sysctl_frame_boost_enable;
 unsigned int sysctl_frame_boost_debug;
-/*
- * Default to ABI-only mode on the 4.14 backport.  This is deliberately
- * independent from frame_boost_enabled: ColorOS can exercise its proc ABI
- * without enabling unvalidated scheduler policy on H.40.
- */
+/* H.40 emergency policy opt-out; zero preserves the 9R donor default. */
 unsigned int sysctl_frame_boost_safe_mode;
 /*
  * H.40 sched_assist already owns these controls.  Reuse that shared state so
@@ -149,7 +145,7 @@ void fbg_sysctl_init(void)
 
 	sysctl_frame_boost_enable = 1;
 	sysctl_frame_boost_debug = 0;
-	sysctl_frame_boost_safe_mode = 1;
+	sysctl_frame_boost_safe_mode = 0;
 	sysctl_slide_boost_enabled = 0;
 	sysctl_input_boost_enabled = 0;
 

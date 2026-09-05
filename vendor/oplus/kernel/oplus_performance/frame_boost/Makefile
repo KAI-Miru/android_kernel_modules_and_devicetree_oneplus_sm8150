@@ -8,3 +8,5 @@ obj-y += frame_debug.o
 obj-y += frame_group.o
 obj-y += frame_ioctl.o
 obj-y += frame_sysctl.o
+obj-y += ua_ioctl_common.o
+obj-y += touch_ioctl.o

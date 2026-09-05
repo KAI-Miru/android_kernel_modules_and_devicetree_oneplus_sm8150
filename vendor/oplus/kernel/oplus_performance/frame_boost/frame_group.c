@@ -329,8 +329,8 @@ static inline void frame_grp_with_lock_assert(struct frame_group *grp)
 static inline bool __frame_boost_enabled(void)
 {
 	/*
-	 * Keep the ColorOS 14 proc/ioctl ABI usable by default, but do not run
-	 * the newly backported policy on H.40 until an explicit root test arms it.
+	 * Match the 9R donor's enabled default.  H.40 retains safe_mode only as an
+	 * explicit root recovery switch if scheduler policy must be suppressed.
 	 */
 	return likely(sysctl_frame_boost_enable) &&
 		!READ_ONCE(sysctl_frame_boost_safe_mode);
