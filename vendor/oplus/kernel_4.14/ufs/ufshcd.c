@@ -2169,6 +2169,88 @@ out:
 	return count;
 }
 
+#ifdef OPLUS_FEATURE_MIDAS
+static ssize_t ufshcd_transmission_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct ufs_transmission_status *status = &hba->ufs_transmission_status;
+
+	return scnprintf(buf, PAGE_SIZE,
+			"transmission_status_enable:%u\n"
+			"gear_min_write_sec:%llu\n"
+			"gear_max_write_sec:%llu\n"
+			"gear_min_read_sec:%llu\n"
+			"gear_max_read_sec:%llu\n"
+			"gear_min_write_us:%llu\n"
+			"gear_max_write_us:%llu\n"
+			"gear_min_read_us:%llu\n"
+			"gear_max_read_us:%llu\n"
+			"gear_min_dev_us:%llu\n"
+			"gear_max_dev_us:%llu\n"
+			"gear_min_other_sec:%llu\n"
+			"gear_max_other_sec:%llu\n"
+			"gear_min_other_us:%llu\n"
+			"gear_max_other_us:%llu\n"
+			"scsi_send_count:%llu\n"
+			"dev_cmd_count:%llu\n",
+			status->transmission_status_enable,
+			status->gear_min_write_sec,
+			status->gear_max_write_sec,
+			status->gear_min_read_sec,
+			status->gear_max_read_sec,
+			status->gear_min_write_us,
+			status->gear_max_write_us,
+			status->gear_min_read_us,
+			status->gear_max_read_us,
+			status->gear_min_dev_us,
+			status->gear_max_dev_us,
+			status->gear_min_other_sec,
+			status->gear_max_other_sec,
+			status->gear_min_other_us,
+			status->gear_max_other_us,
+			status->scsi_send_count,
+			status->dev_cmd_count);
+}
+
+static ssize_t ufshcd_transmission_status_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct ufs_transmission_status *status = &hba->ufs_transmission_status;
+	u32 value;
+
+	if (kstrtou32(buf, 0, &value))
+		return -EINVAL;
+
+	if (value)
+		status->transmission_status_enable = 1;
+	else
+		memset(status, 0, sizeof(*status));
+
+	return count;
+}
+
+static void ufshcd_transmission_status_init_sysfs(struct ufs_hba *hba)
+{
+	struct device_attribute *attr = &hba->ufs_transmission_status_attr;
+
+	attr->show = ufshcd_transmission_status_show;
+	attr->store = ufshcd_transmission_status_store;
+	sysfs_attr_init(&attr->attr);
+	attr->attr.name = "ufs_transmission_status";
+	attr->attr.mode = 0644;
+
+	memset(&hba->ufs_transmission_status, 0,
+	       sizeof(hba->ufs_transmission_status));
+	hba->ufs_transmission_status.transmission_status_enable = 1;
+
+	if (device_create_file(hba->dev, attr))
+		dev_err(hba->dev,
+			"failed to create ufs_transmission_status sysfs node\n");
+}
+#endif
+
 static void ufshcd_clkscaling_init_sysfs(struct ufs_hba *hba)
 {
 	hba->clk_scaling.enable_attr.show = ufshcd_clkscale_enable_show;
@@ -3143,6 +3225,14 @@ int ufshcd_send_command(struct ufs_hba *hba, unsigned int task_tag)
 	ufshcd_cond_add_cmd_trace(hba, task_tag,
 			hba->lrb[task_tag].cmd ? "scsi_send" : "dev_cmd_send");
 	ufshcd_update_tag_stats(hba, task_tag);
+#ifdef OPLUS_FEATURE_MIDAS
+	if (hba->ufs_transmission_status.transmission_status_enable) {
+		if (hba->lrb[task_tag].cmd)
+			hba->ufs_transmission_status.scsi_send_count++;
+		else
+			hba->ufs_transmission_status.dev_cmd_count++;
+	}
+#endif
 	return ret;
 }
 
@@ -6738,6 +6828,58 @@ static void ffu_write_buffer_finish_work_fun(struct work_struct *work) {
 #endif
 
 
+#ifdef OPLUS_FEATURE_MIDAS
+static void ufshcd_lrb_scsicmd_time_statistics(struct ufs_hba *hba,
+		struct ufshcd_lrb *lrbp)
+{
+	struct ufs_transmission_status *status = &hba->ufs_transmission_status;
+	u64 sectors = lrbp->cmd->request ?
+		blk_rq_sectors(lrbp->cmd->request) : 0;
+	u64 usec = ktime_us_delta(lrbp->complete_time_stamp,
+				  lrbp->issue_time_stamp);
+	u8 opcode = lrbp->cmd->cmnd[0];
+
+	if (opcode == WRITE_10 || opcode == WRITE_16) {
+		if (hba->pwr_info.gear_tx == 1) {
+			status->gear_min_write_sec += sectors;
+			status->gear_min_write_us += usec;
+		} else if (hba->pwr_info.gear_tx == 3 ||
+			   hba->pwr_info.gear_tx == 4) {
+			status->gear_max_write_sec += sectors;
+			status->gear_max_write_us += usec;
+		}
+	} else if (opcode == READ_10 || opcode == READ_16) {
+		if (hba->pwr_info.gear_rx == 1) {
+			status->gear_min_read_sec += sectors;
+			status->gear_min_read_us += usec;
+		} else if (hba->pwr_info.gear_rx == 3 ||
+			   hba->pwr_info.gear_rx == 4) {
+			status->gear_max_read_sec += sectors;
+			status->gear_max_read_us += usec;
+		}
+	} else if (hba->pwr_info.gear_rx == 1) {
+		status->gear_min_other_sec += sectors;
+		status->gear_min_other_us += usec;
+	} else if (hba->pwr_info.gear_rx == 3 ||
+		   hba->pwr_info.gear_rx == 4) {
+		status->gear_max_other_sec += sectors;
+		status->gear_max_other_us += usec;
+	}
+}
+
+static void ufshcd_lrb_devcmd_time_statistics(struct ufs_hba *hba,
+		struct ufshcd_lrb *lrbp)
+{
+	u64 usec = ktime_us_delta(lrbp->complete_time_stamp,
+				  lrbp->issue_time_stamp);
+
+	if (hba->pwr_info.gear_tx == 1)
+		hba->ufs_transmission_status.gear_min_dev_us += usec;
+	else if (hba->pwr_info.gear_tx == 3 || hba->pwr_info.gear_tx == 4)
+		hba->ufs_transmission_status.gear_max_dev_us += usec;
+}
+#endif
+
 /**
  * __ufshcd_transfer_req_compl - handle SCSI and query command completion
  * @hba: per adapter instance
@@ -6772,6 +6914,10 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
 			cmd->result = result;
 			clear_bit_unlock(index, &hba->lrb_in_use);
 			lrbp->complete_time_stamp = ktime_get();
+#ifdef OPLUS_FEATURE_MIDAS
+			if (hba->ufs_transmission_status.transmission_status_enable)
+				ufshcd_lrb_scsicmd_time_statistics(hba, lrbp);
+#endif
 			update_req_stats(hba, lrbp);
 			ufshcd_complete_lrbp_crypto(hba, cmd, lrbp);
 			/* Mark completed command as NULL in LRB */
@@ -6823,6 +6969,11 @@ if ((hba->dev_info.quirks & UFS_DEVICE_QUIRK_D1_FFU_RESET) || (hba->dev_info.qui
 }
 		} else if (lrbp->command_type == UTP_CMD_TYPE_DEV_MANAGE ||
 			lrbp->command_type == UTP_CMD_TYPE_UFS_STORAGE) {
+			lrbp->complete_time_stamp = ktime_get();
+#ifdef OPLUS_FEATURE_MIDAS
+			if (hba->ufs_transmission_status.transmission_status_enable)
+				ufshcd_lrb_devcmd_time_statistics(hba, lrbp);
+#endif
 			if (hba->dev_cmd.complete) {
 				ufshcd_cond_add_cmd_trace(hba, index,
 						"dev_cmd_cmpl");
@@ -11760,6 +11911,10 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	ufshcd_set_ufs_dev_active(hba);
 
 	ufshcd_cmd_log_init(hba);
+
+#ifdef OPLUS_FEATURE_MIDAS
+	ufshcd_transmission_status_init_sysfs(hba);
+#endif
 
 #ifdef OPLUS_FEATURE_UFSPLUS
 #if defined(CONFIG_UFSFEATURE)

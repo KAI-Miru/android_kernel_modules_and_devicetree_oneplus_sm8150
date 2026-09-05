@@ -730,6 +730,30 @@ struct ufshcd_cmd_log {
 	u32 seq_num;
 };
 
+#ifdef OPLUS_FEATURE_MIDAS
+/* UFS transmission counters consumed by the OnePlus Midas stack. */
+struct ufs_transmission_status {
+	u8 transmission_status_enable;
+
+	u64 gear_min_write_sec;
+	u64 gear_max_write_sec;
+	u64 gear_min_read_sec;
+	u64 gear_max_read_sec;
+	u64 gear_min_write_us;
+	u64 gear_max_write_us;
+	u64 gear_min_read_us;
+	u64 gear_max_read_us;
+	u64 gear_min_dev_us;
+	u64 gear_max_dev_us;
+	u64 gear_min_other_sec;
+	u64 gear_max_other_sec;
+	u64 gear_min_other_us;
+	u64 gear_max_other_us;
+	u64 scsi_send_count;
+	u64 dev_cmd_count;
+};
+#endif
+
 /* UFS card state - hotplug state */
 enum ufshcd_card_state {
 	UFS_CARD_STATE_UNKNOWN	= 0,
@@ -1037,6 +1061,11 @@ struct ufs_hba {
 	struct ufs_clk_gating clk_gating;
 	struct ufs_hibern8_on_idle hibern8_on_idle;
 	struct ufshcd_cmd_log cmd_log;
+
+#ifdef OPLUS_FEATURE_MIDAS
+	struct ufs_transmission_status ufs_transmission_status;
+	struct device_attribute ufs_transmission_status_attr;
+#endif
 
 	/* Control to enable/disable host capabilities */
 	u32 caps;
