@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2018-2020 Oplus. All rights reserved.
+
+config OPLUS_FEATURE_SIGKILL_DIAGNOSIS
+	bool "sigkill diagnosis driver"
+	default n
+	help
+	  Assist SIGKILL diagnosis by recording kill reason categories for
+	  Athena. The 4.14 port is built-in because kernel/signal.c calls the
+	  recorder directly in place of the 5.4 Android vendor hook.
