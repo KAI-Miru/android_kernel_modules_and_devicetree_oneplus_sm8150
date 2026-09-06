@@ -45,6 +45,8 @@
 #define BINDER_STATS_CTL_CFG_SVR_FILTER_PROC_COMM 113
 #define BINDER_STATS_CTL_CFG_SVR_FILTER_UID 114
 #define BINDER_STATS_CTL_CFG_ENABLE_BINDER_COMM 115
+#define BINDER_STATS_CTL_SRVMGR_INT 120
+#define BINDER_STATS_CTL_SRVMGR_SET_HANDLE_NAME 121
 #define BINDER_STATS_CTL_RET_SUCC 0
 #define BINDER_STATS_CTL_RET_INVALID -1
 
@@ -112,6 +114,9 @@ struct binder_stats_driver {
 	struct list_head user_list_head;
 	bool regist_binder_stats_flag;
 	spinlock_t user_list_lock;
+
+	DECLARE_HASHTABLE(handle_name_hash, BINDER_STATS_HASH_ORDER);
+	int srvmgr_tgid;
 };
 
 struct binder_stats_filter_srv_name {
@@ -127,6 +132,17 @@ struct binder_stats_filter_proc_comm {
 struct binder_stats_filter_uid {
 	int uid;
 	bool intreresting;
+};
+
+struct binder_stats_handle_name {
+	int handle;
+	char service_name[OPLUS_MAX_SERVICE_NAME_LEN];
+};
+
+struct binder_stats_handle_name_node {
+	struct hlist_node hentry;
+	int handle;
+	char service_name[OPLUS_MAX_SERVICE_NAME_LEN];
 };
 
 struct binder_stats_filter_srv_name_node {
@@ -921,6 +937,53 @@ static int binder_stats_driver_mmap(struct file *filp, struct vm_area_struct *vm
 	return 0;
 }
 
+/*
+ * Android 14 servicemanager announces itself and its handle-to-service-name
+ * table through commands 120 and 121.  Miru's 4.14 Binder integration already
+ * records the service name on each Binder node and emits it through the donor
+ * notifier, so this table is compatibility state rather than a second
+ * transaction-accounting path.
+ */
+static int set_driver_binder_stats_srvmgr_init(void)
+{
+	g_binder_stats_driver.srvmgr_tgid = task_tgid_nr(current);
+	return 0;
+}
+
+static int set_driver_binder_stats_srvmgr_handle_name(
+		struct binder_stats_handle_name *handle_name)
+{
+	struct binder_stats_handle_name_node *entry;
+	struct binder_stats_handle_name_node *new_entry;
+
+	if (!handle_name)
+		return -EINVAL;
+
+	handle_name->service_name[OPLUS_MAX_SERVICE_NAME_LEN - 1] = '\0';
+	hash_for_each_possible(g_binder_stats_driver.handle_name_hash, entry,
+			       hentry, handle_name->handle) {
+		if (entry->handle == handle_name->handle) {
+			strncpy(entry->service_name, handle_name->service_name,
+				OPLUS_MAX_SERVICE_NAME_LEN);
+			entry->service_name[OPLUS_MAX_SERVICE_NAME_LEN - 1] = '\0';
+			return 0;
+		}
+	}
+
+	new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
+	if (!new_entry)
+		return -ENOMEM;
+
+	new_entry->handle = handle_name->handle;
+	strncpy(new_entry->service_name, handle_name->service_name,
+		OPLUS_MAX_SERVICE_NAME_LEN);
+	new_entry->service_name[OPLUS_MAX_SERVICE_NAME_LEN - 1] = '\0';
+	hash_add(g_binder_stats_driver.handle_name_hash, &new_entry->hentry,
+		 new_entry->handle);
+
+	return 0;
+}
+
 static long binder_stats_driver_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
 	long ret = -1;
 	int enable = 0;
@@ -929,6 +992,7 @@ static long binder_stats_driver_ioctl(struct file *filp, unsigned int cmd, unsig
 	struct binder_stats_filter_srv_name filter_srv_name;
 	struct binder_stats_filter_proc_comm filter_proc_comm;
 	struct binder_stats_filter_uid filter_uid;
+	struct binder_stats_handle_name handle_name;
 	struct binder_stats_user_context *context_ptr = filp->private_data;
 
 	BINDER_STATS_LOGI("start cmd:%d arg:%lu\n", cmd, arg);
@@ -1059,6 +1123,30 @@ static long binder_stats_driver_ioctl(struct file *filp, unsigned int cmd, unsig
 			}
 		}
 		break;
+	case BINDER_STATS_CTL_SRVMGR_INT: {
+			if (0 == set_driver_binder_stats_srvmgr_init()) {
+				ret = BINDER_STATS_CTL_RET_SUCC;
+			} else {
+				BINDER_STATS_LOGE("BINDER_STATS_CTL_SRVMGR_INT failed!\n");
+				ret = BINDER_STATS_CTL_RET_INVALID;
+			}
+		}
+		break;
+	case BINDER_STATS_CTL_SRVMGR_SET_HANDLE_NAME: {
+			if (copy_from_user(&handle_name, (void __user *)arg,
+					   sizeof(handle_name))) {
+				BINDER_STATS_LOGE("BINDER_STATS_CTL_SRVMGR_SET_HANDLE_NAME failed. copy_from_user error!\n");
+				ret = BINDER_STATS_CTL_RET_INVALID;
+				break;
+			}
+			if (0 == set_driver_binder_stats_srvmgr_handle_name(&handle_name)) {
+				ret = BINDER_STATS_CTL_RET_SUCC;
+			} else {
+				BINDER_STATS_LOGE("BINDER_STATS_CTL_SRVMGR_SET_HANDLE_NAME failed!\n");
+				ret = BINDER_STATS_CTL_RET_INVALID;
+			}
+		}
+		break;
 	default: {
 			BINDER_STATS_LOGE("unknown ioctl cmd:%d\n", cmd);
 			ret = BINDER_STATS_CTL_RET_INVALID;
@@ -1086,6 +1174,8 @@ int __init binder_stats_dev_init(void) {
 	mutex_init(&g_binder_stats_driver.lock);
 	spin_lock_init(&g_binder_stats_driver.user_list_lock);
 	INIT_LIST_HEAD(&g_binder_stats_driver.user_list_head);
+	hash_init(g_binder_stats_driver.handle_name_hash);
+	g_binder_stats_driver.srvmgr_tgid = -1;
 
 	err = alloc_chrdev_region(&g_binder_stats_driver.dev, 0, 1, "binder_stats");
 	if (err < 0) {
@@ -1133,6 +1223,16 @@ fail:
 
 
 void __exit binder_stats_dev_exit(void) {
+	struct binder_stats_handle_name_node *entry;
+	struct hlist_node *tmp;
+	int bucket;
+
+	hash_for_each_safe(g_binder_stats_driver.handle_name_hash, bucket, tmp,
+			   entry, hentry) {
+		hash_del(&entry->hentry);
+		kfree(entry);
+	}
+
 	if (g_binder_stats_driver.dev_class) {
 		device_destroy(g_binder_stats_driver.dev_class, g_binder_stats_driver.dev);
 		class_destroy(g_binder_stats_driver.dev_class);
