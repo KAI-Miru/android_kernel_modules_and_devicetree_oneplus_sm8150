@@ -613,7 +613,7 @@ static int dpi_handle_match(struct sk_buff *skb, int dir, int v6)
 		return ret;
 	}
 
-	ktime_get_raw_ts64(&time);
+	getrawmonotonic64(&time);
 	cur_time = time.tv_sec * NS_PER_SEC + time.tv_nsec;
 	spin_lock_bh(&s_dpi_lock);
 	socket_node = get_dpi_socket_node_by_tuple(&tuple);
@@ -702,7 +702,7 @@ static void dpi_clear_sock_list(void)
 	logi("dpi_clear_sock_list start dpi count[%u-%u][%u-%u-%u-%u-%u]", s_notify_count, s_match_app_count,
 		s_dpi_result_count[DPI_LEVEL_TYPE_APP], s_dpi_result_count[DPI_LEVEL_TYPE_FUNCTION],
 		s_dpi_result_count[DPI_LEVEL_TYPE_STREAM], s_dpi_result_count[DPI_LEVEL_TYPE_UID], s_match_socket_count);
-	ktime_get_raw_ts64(&time);
+	getrawmonotonic64(&time);
 	curr_time = time.tv_sec * NS_PER_SEC + time.tv_nsec;
 
 	if (s_match_socket_count == 0) {
@@ -1031,7 +1031,7 @@ static int get_dpi_stream_speed_uid_request(u32 eventid, Netlink__Proto__Request
 	uid_size = requestMsg->requestgetdpistreamspeed->n_uid;
 	ifidx_count = requestMsg->requestgetdpistreamspeed->n_ifidx;
 	speed_size = requestMsg->requestgetdpistreamspeed->speed_size;
-	ktime_get_raw_ts64(&time);
+	getrawmonotonic64(&time);
 	cur_time = time.tv_sec * NS_PER_SEC + time.tv_nsec;
 
 	spin_lock_bh(&s_dpi_lock);
@@ -1180,7 +1180,7 @@ static int get_all_uid_dpi_speed_request(u32 eventid, Netlink__Proto__RequestMes
 	}
 	ifidx_count = requestMsg->requestgetalluidspeed->n_ifidx;
 	speed_size = requestMsg->requestgetalluidspeed->speed_size;
-	ktime_get_raw_ts64(&time);
+	getrawmonotonic64(&time);
 	cur_time = time.tv_sec * NS_PER_SEC + time.tv_nsec;
 
 	spin_lock_bh(&s_dpi_lock);
