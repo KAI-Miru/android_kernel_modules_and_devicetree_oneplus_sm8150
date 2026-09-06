@@ -39,7 +39,6 @@
 #include <net/udp.h>
 #include <linux/netfilter_ipv6.h>
 #include <linux/timekeeping.h>
-#include <linux/crc64.h>
 #include <linux/crc32.h>
 #include <linux/sock_diag.h>
 
