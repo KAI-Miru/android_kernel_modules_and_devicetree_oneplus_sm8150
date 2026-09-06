@@ -69,6 +69,12 @@ struct rasm_data {
 	long last_resume_millsec_time;
 };
 
+/*
+ * The platform driver data belongs to the character device. Keep the
+ * suspend/resume timestamps separate instead of aliasing and corrupting it.
+ */
+static struct rasm_data rasm_state;
+
 static int rasm_resume(struct device *dev) {
 	struct timeval resume_time;
 	struct timeval resume_boot_time;
@@ -76,7 +82,7 @@ static int rasm_resume(struct device *dev) {
 	int index = 0;
 	int i;
 
-	data = dev->driver_data;
+	data = &rasm_state;
 	do_gettimeofday(&resume_time);
 	data->last_resume_time = resume_time.tv_sec;
 	data->last_resume_millsec_time = resume_time.tv_sec * 1000 + resume_time.tv_usec / 1000;
@@ -105,7 +111,7 @@ static int rasm_suspend(struct device *dev) {
 	struct timeval suspend_time;
 	struct rasm_data *data;
 
-	data = dev->driver_data;
+	data = &rasm_state;
 	do_gettimeofday(&suspend_time);
 	data->last_suspend_time = suspend_time.tv_sec;
 	data->last_suspend_millsec_time = suspend_time.tv_sec * 1000 + suspend_time.tv_usec / 1000;
