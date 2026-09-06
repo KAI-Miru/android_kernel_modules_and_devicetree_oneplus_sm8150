@@ -4,8 +4,8 @@
 oplus_midas_device-objs := midas_dev.o midas_ioctl.o
 obj-$(CONFIG_OPLUS_FEATURE_MIDAS) += oplus_midas_device.o
 
-oplus_binder_stats-objs := binder_stats_dev.o
-obj-$(CONFIG_OPLUS_FEATURE_BINDER_STATS_ENABLE) += oplus_binder_stats.o
+# BinderStats is owned by the built-in wrapper under drivers/android on Miru.
+# Do not compile the same donor implementation a second time through MIDAS.
 
 obj-$(CONFIG_OPLUS_FEATURE_SET_ALL_VPU_LATENCY) += vpu_pw_off_latency_proc.o
 
