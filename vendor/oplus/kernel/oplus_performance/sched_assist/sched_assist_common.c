@@ -46,8 +46,12 @@ static int global_debug_enabled;
 static pid_t save_audio_tgid;
 static pid_t save_top_app_tgid;
 static unsigned int top_app_type;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+static DEFINE_PER_CPU(int, prev_ux_priority);
+#endif
 
 #define S2NS_T 1000000
+#define MAX_INHERIT_GRAN ((u64)(64 * S2NS_T))
 
 static unsigned int param_ux_debug;
 module_param_named(debug, param_ux_debug, uint, 0644);
@@ -181,11 +185,21 @@ inline bool test_task_ux(struct task_struct *task)
 	if (!task)
 		return false;
 
-	if (task->sched_class != &fair_sched_class)
+	if (task->sched_class != &fair_sched_class &&
+			task->sched_class != &rt_sched_class)
 		return false;
 
-	if (task->ux_state & (SA_TYPE_HEAVY | SA_TYPE_LIGHT | SA_TYPE_ANIMATOR | SA_TYPE_LISTPICK))
+	if (task->ux_state & (SA_TYPE_HEAVY | SA_TYPE_LIGHT |
+			SA_TYPE_ANIMATOR | SA_TYPE_LISTPICK |
+			SA_TYPE_ID_CAMERA_PROVIDER)) {
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+		unsigned int limit = ux_task_exec_limit(task);
+
+		if (task->total_exec && task->total_exec > limit)
+			return false;
+#endif
 		return true;
+	}
 
 	return false;
 }
@@ -458,6 +472,9 @@ void ux_init_rq_data(struct rq *rq)
 	}
 
 	INIT_LIST_HEAD(&rq->ux_thread_list);
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+	raw_spin_lock_init(&rq->ux_list_lock);
+#endif
 }
 
 int ux_prefer_cpu[NR_CPUS] = {0};
@@ -981,6 +998,29 @@ retry:
 	return;
 }
 
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+static void requeue_runnable_task(struct task_struct *p)
+{
+	bool queued, running;
+	struct rq_flags rf;
+	struct rq *rq;
+
+	rq = task_rq_lock(p, &rf);
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+	if (!queued || running) {
+		task_rq_unlock(rq, p, &rf);
+		return;
+	}
+
+	update_rq_clock(rq);
+	deactivate_task(rq, p, DEQUEUE_NOCLOCK);
+	activate_task(rq, p, ENQUEUE_NOCLOCK);
+	resched_curr(rq);
+	task_rq_unlock(rq, p, &rf);
+}
+#endif
+
 void set_inherit_ux(struct task_struct *task, int type, int depth, int inherit_val)
 {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,9,0)
@@ -990,6 +1030,10 @@ void set_inherit_ux(struct task_struct *task, int type, int depth, int inherit_v
 #endif
 	struct rq *rq = NULL;
 	int old_state = 0;
+	int new_state;
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+	bool list_pick = false;
+#endif
 
 	if (!task || type >= INHERIT_UX_MAX) {
 		return;
@@ -1005,17 +1049,29 @@ void set_inherit_ux(struct task_struct *task, int type, int depth, int inherit_v
 	inherit_ux_inc(task, type);
 	task->ux_depth = depth + 1;
 	old_state = task->ux_state;
-	task->ux_state = (inherit_val & SCHED_ASSIST_UX_MASK) | SA_TYPE_INHERIT;
+	new_state = (inherit_val & SCHED_ASSIST_UX_MASK) | SA_TYPE_INHERIT;
 	/* identify type like allocator ux, keep it, but can not inherit  */
 	if (old_state & SA_TYPE_ID_ALLOCATOR_SER)
-		task->ux_state |= SA_TYPE_ID_ALLOCATOR_SER;
+		new_state |= SA_TYPE_ID_ALLOCATOR_SER;
 	if (old_state & SA_TYPE_ID_CAMERA_PROVIDER)
-		task->ux_state |= SA_TYPE_ID_CAMERA_PROVIDER;
+		new_state |= SA_TYPE_ID_CAMERA_PROVIDER;
 	task->inherit_ux_start = jiffies_to_nsecs(jiffies);
 
-	sched_assist_systrace_pid(task->tgid, task->ux_state, "ux_state %d", task->pid);
+	sched_assist_systrace_pid(task->tgid, new_state, "ux_state %d", task->pid);
+	oplus_set_ux_state_lock(task, new_state, false);
+
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+	list_pick = test_list_pick_ux(task);
+	if (list_pick && task->on_rq && list_empty(&task->ux_entry))
+		insert_ux_task_into_list(rq, task);
+#endif
 
 	task_rq_unlock(rq, task, &flags);
+
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+	if (!list_pick)
+		requeue_runnable_task(task);
+#endif
 }
 
 void reset_inherit_ux(struct task_struct *inherit_task, struct task_struct *ux_task, int reset_type)
@@ -1028,6 +1084,7 @@ void reset_inherit_ux(struct task_struct *inherit_task, struct task_struct *ux_t
 	struct rq *rq;
 	int reset_depth = 0;
 	int reset_inherit = 0;
+	int ux_state;
 
 	if (!inherit_task || !ux_task || reset_type >= INHERIT_UX_MAX) {
 		return;
@@ -1047,7 +1104,9 @@ void reset_inherit_ux(struct task_struct *inherit_task, struct task_struct *ux_t
 		reset_inherit &= ~SA_TYPE_ID_ALLOCATOR_SER;
 	if (reset_inherit & SA_TYPE_ID_CAMERA_PROVIDER)
 		reset_inherit &= ~SA_TYPE_ID_CAMERA_PROVIDER;
-	inherit_task->ux_state = (inherit_task->ux_state & ~SCHED_ASSIST_UX_MASK) | reset_inherit;
+	ux_state = (inherit_task->ux_state & ~SCHED_ASSIST_UX_MASK) |
+		reset_inherit;
+	oplus_set_ux_state_lock(inherit_task, ux_state, false);
 
 	sched_assist_systrace_pid(inherit_task->tgid, inherit_task->ux_state, "ux_state %d", inherit_task->pid);
 
@@ -1063,6 +1122,7 @@ void unset_inherit_ux_value(struct task_struct *task, int type, int value)
 #endif
 	struct rq *rq;
 	s64 inherit_ux;
+	int ux_state;
 
 	if (!task || type >= INHERIT_UX_MAX) {
 		return;
@@ -1081,7 +1141,9 @@ void unset_inherit_ux_value(struct task_struct *task, int type, int value)
 	}
 	task->ux_depth = 0;
 	/* identify type like allocator ux, keep it, but can not inherit  */
-	task->ux_state &= SA_TYPE_ID_ALLOCATOR_SER | SA_TYPE_ID_CAMERA_PROVIDER;
+	ux_state = task->ux_state;
+	ux_state &= SA_TYPE_ID_ALLOCATOR_SER | SA_TYPE_ID_CAMERA_PROVIDER;
+	oplus_set_ux_state_lock(task, ux_state, false);
 
 	sched_assist_systrace_pid(task->tgid, task->ux_state, "ux_state %d", task->pid);
 
@@ -1280,6 +1342,9 @@ static ssize_t proc_ux_state_write(struct file *file, const char __user *buf,
 	struct task_struct *task;
 	char buffer[PROC_NUMBUF];
 	int err, ux_state;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+	int ux_orig;
+#endif
 
 	memset(buffer, 0, sizeof(buffer));
 
@@ -1299,9 +1364,26 @@ static ssize_t proc_ux_state_write(struct file *file, const char __user *buf,
 	}
 
 	if (ux_state < 0) {
+		put_task_struct(task);
 		return -EINVAL;
 	}
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+	ux_orig = task->ux_state;
+	if (ux_state == SA_OPT_CLEAR) {
+		ux_orig &= (SA_TYPE_ANIMATOR | SA_TYPE_ID_ALLOCATOR_SER |
+			SA_TYPE_ID_CAMERA_PROVIDER);
+		oplus_set_ux_state_lock(task, ux_orig, true);
+	} else if (ux_state & SA_OPT_SET) {
+		if (ux_state & SA_OPT_SET_PRIORITY)
+			ux_orig &= ~SCHED_ASSIST_UX_PRIORITY_MASK;
+		ux_orig |= ux_state & ~(SA_OPT_SET | SA_OPT_SET_PRIORITY);
+		oplus_set_ux_state_lock(task, ux_orig, true);
+	} else if (ux_orig & ux_state) {
+		ux_orig &= ~ux_state;
+		oplus_set_ux_state_lock(task, ux_orig, true);
+	}
+#else
 	if (ux_state == SA_OPT_CLEAR) { /* clear all ux type but animator */
 		task->ux_state &= ~(SA_TYPE_LISTPICK | SA_TYPE_HEAVY | SA_TYPE_LIGHT);
 	} else if (ux_state & SA_OPT_SET) { /* set target ux type and clear set opt */
@@ -1309,6 +1391,7 @@ static ssize_t proc_ux_state_write(struct file *file, const char __user *buf,
 	} else if (task->ux_state & ux_state) { /* reset target ux type */
 		task->ux_state &= ~ux_state;
 	}
+#endif
 	sched_assist_systrace_pid(task->tgid, task->ux_state, "ux_state %d", task->pid);
 
 	put_task_struct(task);
@@ -1846,3 +1929,301 @@ err_scheduler:
 	return -ENOMEM;
 }
 device_initcall(oplus_sched_assist_proc_init);
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+void ux_priority_systrace_c(unsigned int cpu, struct task_struct *p)
+{
+	int ux_priority;
+
+	if (likely(!(READ_ONCE(global_debug_enabled) & DEBUG_SYSTRACE)))
+		return;
+
+	ux_priority = (p->ux_state & SCHED_ASSIST_UX_PRIORITY_MASK) >>
+		SCHED_ASSIST_UX_PRIORITY_SHIFT;
+	if (per_cpu(prev_ux_priority, cpu) == ux_priority)
+		return;
+
+	sched_assist_systrace_pid(9998, ux_priority,
+		"Cpu%d_ux_priority", cpu);
+	per_cpu(prev_ux_priority, cpu) = ux_priority;
+}
+
+unsigned int ux_task_exec_limit(struct task_struct *p)
+{
+	int ux_state = p->ux_state;
+	unsigned int exec_limit = UX_EXEC_SLICE;
+
+	if (p->ux_im_flag == IM_FLAG_SS_LOCK_OWNER &&
+			(ux_state & SA_TYPE_LISTPICK))
+		return exec_limit;
+
+	if (sched_assist_scene(SA_LAUNCH) &&
+			!(ux_state & SA_TYPE_INHERIT))
+		return exec_limit * 25;
+
+	if (ux_state & SA_TYPE_ANIMATOR)
+		exec_limit *= 8;
+	else if (ux_state & SA_TYPE_LIGHT)
+		exec_limit *= 2;
+	else if (ux_state & SA_TYPE_HEAVY)
+		exec_limit *= 8;
+	else if (ux_state & SA_TYPE_LISTPICK)
+		exec_limit *= 25;
+
+	return exec_limit;
+}
+
+static bool ux_prio_higher(int a, int b)
+{
+	int a_priority = a & SCHED_ASSIST_UX_PRIORITY_MASK;
+	int b_priority = b & SCHED_ASSIST_UX_PRIORITY_MASK;
+
+	if (a_priority != b_priority)
+		return a_priority > b_priority;
+	if (a & SA_TYPE_ANIMATOR)
+		return !(b & SA_TYPE_ANIMATOR);
+	if (a & SA_TYPE_LIGHT)
+		return !(b & (SA_TYPE_ANIMATOR | SA_TYPE_LIGHT));
+	if (a & SA_TYPE_HEAVY)
+		return !(b & (SA_TYPE_ANIMATOR | SA_TYPE_LIGHT |
+			SA_TYPE_HEAVY));
+	return false;
+}
+
+static void insert_ux_task_into_list_ordered(struct task_struct *p,
+		struct rq *rq)
+{
+	struct list_head *pos;
+
+	list_for_each(pos, &rq->ux_thread_list) {
+		struct task_struct *tmp = container_of(pos,
+			struct task_struct, ux_entry);
+
+		if (ux_prio_higher(p->ux_state, tmp->ux_state))
+			break;
+	}
+	list_add(&p->ux_entry, pos->prev);
+}
+
+void enqueue_ux_thread_to_list(struct rq *rq, struct task_struct *p)
+{
+	unsigned long irqflag;
+
+	if (unlikely(!sysctl_sched_assist_enabled))
+		return;
+	if (!rq || !p || !list_empty(&p->ux_entry))
+		return;
+
+#ifdef CONFIG_OPLUS_CPU_AUDIO_PERF
+	oplus_sched_assist_audio_enqueue_hook(p);
+#endif
+	p->enqueue_time = rq_clock(rq);
+	raw_spin_lock_irqsave(&rq->ux_list_lock, irqflag);
+	if (!list_empty(&p->ux_entry)) {
+		raw_spin_unlock_irqrestore(&rq->ux_list_lock, irqflag);
+		return;
+	}
+
+	if (test_task_ux(p)) {
+		insert_ux_task_into_list_ordered(p, rq);
+		get_task_struct(p);
+		if (!p->total_exec)
+			p->sum_exec_baseline = p->se.sum_exec_runtime;
+	}
+	raw_spin_unlock_irqrestore(&rq->ux_list_lock, irqflag);
+}
+
+void dequeue_ux_thread_from_list(struct rq *rq, struct task_struct *p)
+{
+	unsigned long irqflag;
+
+	if (!rq || !p)
+		return;
+
+	p->enqueue_time = 0;
+	raw_spin_lock_irqsave(&rq->ux_list_lock, irqflag);
+	if (!list_empty(&p->ux_entry)) {
+		u64 now = jiffies_to_nsecs(jiffies);
+
+		list_del_init(&p->ux_entry);
+		if (get_ux_state_type(p) == UX_STATE_INHERIT &&
+				now - p->inherit_ux_start > MAX_INHERIT_GRAN) {
+			atomic64_set(&p->inherit_ux, 0);
+			p->ux_depth = 0;
+			p->ux_state &= (SA_TYPE_ID_ALLOCATOR_SER |
+				SA_TYPE_ID_CAMERA_PROVIDER);
+		}
+		if (p->ux_state & SA_TYPE_ONCE_UX) {
+			atomic64_set(&p->inherit_ux, 0);
+			p->ux_depth = 0;
+			p->ux_state &= (SA_TYPE_ID_ALLOCATOR_SER |
+				SA_TYPE_ID_CAMERA_PROVIDER);
+		}
+		put_task_struct(p);
+	}
+	if (p->state != TASK_RUNNING)
+		p->total_exec = 0;
+	raw_spin_unlock_irqrestore(&rq->ux_list_lock, irqflag);
+}
+
+static void account_ux_runtime(struct rq *rq, struct task_struct *curr)
+{
+	s64 delta;
+	unsigned int limit;
+
+	lockdep_assert_held(&rq->lock);
+	if (!(rq->clock_update_flags & RQCF_UPDATED))
+		update_rq_clock(rq);
+
+	delta = curr->se.sum_exec_runtime - curr->sum_exec_baseline;
+	if (delta < 0)
+		delta = 0;
+	else
+		delta += rq_clock_task(rq) - curr->se.exec_start;
+	if (delta < UX_EXEC_SLICE)
+		return;
+
+	curr->sum_exec_baseline += delta;
+	curr->total_exec += delta;
+	limit = ux_task_exec_limit(curr);
+	list_del_init(&curr->ux_entry);
+	if (curr->total_exec > limit)
+		put_task_struct(curr);
+	else
+		insert_ux_task_into_list_ordered(curr, rq);
+}
+
+void oplus_check_preempt_wakeup_in_list(struct rq *rq,
+		struct task_struct *wake_task, struct task_struct *curr_task,
+		bool *preempt, bool *nopreempt)
+{
+	unsigned long irqflag;
+	bool wake_ux;
+	bool curr_ux;
+
+	if (!sysctl_sched_assist_enabled)
+		return;
+
+	wake_ux = test_task_ux(wake_task) || test_list_pick_ux(wake_task) ||
+		test_task_identify_ux(wake_task, SA_TYPE_ID_CAMERA_PROVIDER);
+	curr_ux = test_task_ux(curr_task) || test_list_pick_ux(curr_task) ||
+		test_task_identify_ux(curr_task, SA_TYPE_ID_CAMERA_PROVIDER);
+
+	if (!wake_ux && !curr_ux)
+		return;
+	if (wake_ux && !curr_ux) {
+		*preempt = true;
+		return;
+	}
+	if (!wake_ux && curr_ux) {
+		*nopreempt = true;
+		goto update;
+	}
+	if (ux_prio_higher(wake_task->ux_state, curr_task->ux_state))
+		*preempt = true;
+
+update:
+	raw_spin_lock_irqsave(&rq->ux_list_lock, irqflag);
+	if (!list_empty(&curr_task->ux_entry))
+		account_ux_runtime(rq, curr_task);
+	raw_spin_unlock_irqrestore(&rq->ux_list_lock, irqflag);
+}
+
+void android_vh_scheduler_tick_handler(struct rq *rq)
+{
+	struct rq_flags rf;
+	unsigned long irqflag;
+
+	if (list_empty(&rq->curr->ux_entry))
+		return;
+
+	rq_lock(rq, &rf);
+	raw_spin_lock_irqsave(&rq->ux_list_lock, irqflag);
+	if (!list_empty(&rq->curr->ux_entry))
+		account_ux_runtime(rq, rq->curr);
+	raw_spin_unlock_irqrestore(&rq->ux_list_lock, irqflag);
+	rq_unlock(rq, &rf);
+}
+
+static void oplus_replace_next_task_fair(struct rq *rq,
+		struct task_struct **p, struct sched_entity **se, bool *repick)
+{
+	struct list_head *pos;
+	struct list_head *n;
+	unsigned long irqflag;
+
+	if (unlikely(!sysctl_sched_assist_enabled))
+		return;
+
+	raw_spin_lock_irqsave(&rq->ux_list_lock, irqflag);
+	list_for_each_safe(pos, n, &rq->ux_thread_list) {
+		struct task_struct *temp = list_entry(pos,
+			struct task_struct, ux_entry);
+
+		if (unlikely(task_cpu(temp) != rq->cpu) ||
+				unlikely(!test_task_ux(temp))) {
+			list_del_init(&temp->ux_entry);
+			put_task_struct(temp);
+			continue;
+		}
+		*p = temp;
+		*se = &temp->se;
+		*repick = true;
+		break;
+	}
+	raw_spin_unlock_irqrestore(&rq->ux_list_lock, irqflag);
+}
+
+void android_rvh_replace_next_task_fair_handler(struct rq *rq,
+		struct task_struct **p, struct sched_entity **se,
+		bool *repick, bool simple)
+{
+	oplus_replace_next_task_fair(rq, p, se, repick);
+#ifdef CONFIG_LOCKING_PROTECT
+	if (!*repick && pick_locking_thread(rq, p, se))
+		*repick = true;
+#endif
+}
+
+void oplus_set_ux_state_lock(struct task_struct *t, int ux_state,
+		bool need_lock_rq)
+{
+	struct rq *rq;
+	struct rq_flags flags;
+	unsigned long irqflag;
+
+	if (need_lock_rq)
+		rq = task_rq_lock(t, &flags);
+	else
+		rq = task_rq(t);
+
+	if (t->sched_class != &fair_sched_class || ux_state == t->ux_state)
+		goto out;
+
+	raw_spin_lock_irqsave(&rq->ux_list_lock, irqflag);
+	t->ux_state = ux_state;
+	if (!(ux_state & POSSIBLE_UX_MASK)) {
+		if (!list_empty(&t->ux_entry)) {
+			list_del_init(&t->ux_entry);
+			put_task_struct(t);
+		}
+	} else if (task_on_rq_queued(t)) {
+		bool unlinked = list_empty(&t->ux_entry);
+
+		lockdep_assert_held(&rq->lock);
+		if (unlinked) {
+			get_task_struct(t);
+			if (!t->total_exec)
+				t->sum_exec_baseline = t->se.sum_exec_runtime;
+		} else {
+			list_del_init(&t->ux_entry);
+		}
+		insert_ux_task_into_list_ordered(t, rq);
+	}
+	raw_spin_unlock_irqrestore(&rq->ux_list_lock, irqflag);
+
+out:
+	if (need_lock_rq)
+		task_rq_unlock(rq, t, &flags);
+}
+#endif

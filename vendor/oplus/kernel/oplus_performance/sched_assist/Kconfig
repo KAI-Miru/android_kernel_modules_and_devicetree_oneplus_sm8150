@@ -4,6 +4,13 @@ config OPLUS_FEATURE_SCHED_ASSIST
 	help
 	  turning sched for ui, render and so on to improve UX
 
+config OPLUS_FEATURE_SCHED_UX_PRIORITY
+	bool "Ordered UX priority scheduling"
+	default n
+	depends on OPLUS_FEATURE_SCHED_ASSIST
+	help
+	  Enable the OnePlus 9R ordered UX runqueue and execution budgets.
+
 config OPLUS_UX_IM_FLAG
 	bool "OPlus sched_assist IM flag classification"
 	depends on OPLUS_FEATURE_SCHED_ASSIST
