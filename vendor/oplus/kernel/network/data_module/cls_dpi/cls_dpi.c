@@ -46,7 +46,14 @@ struct cls_dpi_data {
 	struct tcf_result res;
 	struct tcf_exts exts;
 	struct tcf_proto *tp;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+	union {
+		struct work_struct work;
+		struct rcu_head rcu;
+	};
+#else
 	struct rcu_work rwork;
+#endif
 	u32 handle;
 	u32 type;
 	u64 dpi_id;
@@ -70,13 +77,27 @@ static void __cls_dpi_delete_data(struct cls_dpi_data *pdata)
 
 static void cls_dpi_delete_work(struct work_struct *work)
 {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+	struct cls_dpi_data *pdata = container_of(work, struct cls_dpi_data, work);
+#else
 	struct cls_dpi_data *pdata = container_of(to_rcu_work(work), struct cls_dpi_data, rwork);
+#endif
 	rtnl_lock();
 	__cls_dpi_delete_data(pdata);
 	rtnl_unlock();
 }
 
-static void __cls_dpi_delete(struct tcf_proto *tp, struct cls_dpi_data *prog, struct netlink_ext_ack *extack)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+static void cls_dpi_delete_rcu(struct rcu_head *rcu)
+{
+	struct cls_dpi_data *pdata = container_of(rcu, struct cls_dpi_data, rcu);
+
+	INIT_WORK(&pdata->work, cls_dpi_delete_work);
+	tcf_queue_work(&pdata->work);
+}
+#endif
+
+static void __cls_dpi_delete(struct tcf_proto *tp, struct cls_dpi_data *prog)
 {
 	struct cls_dpi_head *head = rtnl_dereference(tp->root);
 
@@ -84,7 +105,11 @@ static void __cls_dpi_delete(struct tcf_proto *tp, struct cls_dpi_data *prog, st
 	list_del_rcu(&prog->link);
 	tcf_unbind_filter(tp, &prog->res);
 	if (tcf_exts_get_net(&prog->exts)) {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+		call_rcu(&prog->rcu, cls_dpi_delete_rcu);
+#else
 		tcf_queue_work(&prog->rwork, cls_dpi_delete_work);
+#endif
 	} else {
 		__cls_dpi_delete_data(prog);
 	}
@@ -459,11 +484,19 @@ errout:
 }
 #else
 static int cls_dpi_set_params(struct net *net, struct tcf_proto *tp, struct cls_dpi_data *pdata, unsigned long base,
-								struct nlattr **tb, struct nlattr *est, bool ovr, struct netlink_ext_ack *extack)
+								struct nlattr **tb, struct nlattr *est, bool ovr
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+								, struct netlink_ext_ack *extack
+#endif
+								)
 {
 	int ret = 0;
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+	ret = tcf_exts_validate(net, tp, tb, est, &pdata->exts, ovr);
+#else
 	ret = tcf_exts_validate(net, tp, tb, est, &pdata->exts, ovr, extack);
+#endif
 	if (ret < 0) {
 		return ret;
 	}
@@ -497,7 +530,11 @@ static int cls_dpi_set_params(struct net *net, struct tcf_proto *tp, struct cls_
 }
 
 static int cls_dpi_change(struct net *net, struct sk_buff *in_skb, struct tcf_proto *tp, unsigned long base,
-						u32 handle, struct nlattr **tca, void **arg, bool ovr, struct netlink_ext_ack *extack)
+						u32 handle, struct nlattr **tca, void **arg, bool ovr
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+						, struct netlink_ext_ack *extack
+#endif
+						)
 {
 	int ret = 0;
 	struct nlattr *tb[TCA_DPI_MAX + 1];
@@ -531,17 +568,40 @@ static int cls_dpi_change(struct net *net, struct sk_buff *in_skb, struct tcf_pr
 		}
 	}
 	if (handle == 0) {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+		ret = idr_alloc(&head->handle_idr, new_data, 1, 0, GFP_KERNEL);
+		if (ret >= 0) {
+			handle = ret;
+			ret = 0;
+		}
+#else
 		handle = 1;
 		ret = idr_alloc_u32(&head->handle_idr, new_data, &handle, INT_MAX, GFP_KERNEL);
+#endif
 	} else if (!old) {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+		if (handle >= INT_MAX) {
+			ret = -EINVAL;
+		} else {
+			ret = idr_alloc(&head->handle_idr, new_data, handle, handle + 1, GFP_KERNEL);
+			if (ret >= 0) {
+				ret = 0;
+			}
+		}
+#else
 		ret = idr_alloc_u32(&head->handle_idr, new_data, &handle, handle, GFP_KERNEL);
+#endif
 	}
 	if (ret) {
 		goto errout;
 	}
 	new_data->handle = handle;
 
-	ret = cls_dpi_set_params(net, tp, new_data, base, tb, tca[TCA_RATE], ovr, extack);
+	ret = cls_dpi_set_params(net, tp, new_data, base, tb, tca[TCA_RATE], ovr
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+							 , extack
+#endif
+							 );
 	if (ret < 0) {
 		goto errout_idr;
 	}
@@ -552,7 +612,11 @@ static int cls_dpi_change(struct net *net, struct sk_buff *in_skb, struct tcf_pr
 		list_replace_rcu(&old->link, &new_data->link);
 		tcf_unbind_filter(tp, &old->res);
 		tcf_exts_get_net(&old->exts);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+		call_rcu(&old->rcu, cls_dpi_delete_rcu);
+#else
 		tcf_queue_work(&old->rwork, cls_dpi_delete_work);
+#endif
 	} else {
 		logt("add filter!");
 		list_add_rcu(&new_data->link, &head->plist);
@@ -579,7 +643,7 @@ static void cls_dpi_destroy(struct tcf_proto *tp, bool rtnl_held, struct netlink
 	struct cls_dpi_data *prog, *tmp;
 
 	list_for_each_entry_safe(prog, tmp, &head->plist, link) {
-		__cls_dpi_delete(tp, prog, extack);
+		__cls_dpi_delete(tp, prog);
 	}
 
 	idr_destroy(&head->handle_idr);
@@ -589,7 +653,7 @@ static void cls_dpi_destroy(struct tcf_proto *tp, bool rtnl_held, struct netlink
 static int cls_dpi_delete(struct tcf_proto *tp, void *arg, bool *last, bool rtnl_held, struct netlink_ext_ack *extack)
 {
 	struct cls_dpi_head *head = rtnl_dereference(tp->root);
-	__cls_dpi_delete(tp, arg, extack);
+	__cls_dpi_delete(tp, arg);
 	*last = list_empty(&head->plist);
 	return 0;
 }
@@ -653,23 +717,31 @@ nla_put_failure:
 	return -1;
 }
 #else
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+static void cls_dpi_destroy(struct tcf_proto *tp)
+#else
 static void cls_dpi_destroy(struct tcf_proto *tp, struct netlink_ext_ack *extack)
+#endif
 {
 	struct cls_dpi_head *head = rtnl_dereference(tp->root);
 	struct cls_dpi_data *prog, *tmp;
 
 	list_for_each_entry_safe(prog, tmp, &head->plist, link) {
-		__cls_dpi_delete(tp, prog, extack);
+		__cls_dpi_delete(tp, prog);
 	}
 
 	idr_destroy(&head->handle_idr);
 	kfree_rcu(head, rcu);
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+static int cls_dpi_delete(struct tcf_proto *tp, void *arg, bool *last)
+#else
 static int cls_dpi_delete(struct tcf_proto *tp, void *arg, bool *last, struct netlink_ext_ack *extack)
+#endif
 {
 	struct cls_dpi_head *head = rtnl_dereference(tp->root);
-	__cls_dpi_delete(tp, arg, extack);
+	__cls_dpi_delete(tp, arg);
 	*last = list_empty(&head->plist);
 	return 0;
 }
@@ -734,6 +806,15 @@ nla_put_failure:
 }
 #endif
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+static void cls_dpi_bind_class(void *fh, u32 classid, unsigned long cl)
+{
+	struct cls_dpi_data *prog = fh;
+
+	if (prog && prog->res.classid == classid)
+		prog->res.class = cl;
+}
+#else
 static void cls_dpi_bind_class(void *fh, u32 classid, unsigned long cl, void *q, unsigned long base)
 {
 	struct cls_dpi_data *prog = fh;
@@ -746,6 +827,7 @@ static void cls_dpi_bind_class(void *fh, u32 classid, unsigned long cl, void *q,
 		}
 	}
 }
+#endif
 
 static struct tcf_proto_ops cls_dpi_ops __read_mostly = {
 	.kind = "dpi",
@@ -757,7 +839,9 @@ static struct tcf_proto_ops cls_dpi_ops __read_mostly = {
 	.change		=	cls_dpi_change,
 	.delete		=	cls_dpi_delete,
 	.walk		=	cls_dpi_walk,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
 	.reoffload	=	NULL,
+#endif
 	.dump		=	cls_dpi_dump,
 	.bind_class	=	cls_dpi_bind_class,
 };
