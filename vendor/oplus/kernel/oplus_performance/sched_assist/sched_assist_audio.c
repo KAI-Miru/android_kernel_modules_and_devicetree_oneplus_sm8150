@@ -9,6 +9,7 @@
  */
 #include <linux/list.h>
 #include <linux/kernel.h>
+#include <linux/cpuidle.h>
 #include <linux/spinlock.h>
 #include <linux/proc_fs.h>
 #include <linux/rcupdate.h>
