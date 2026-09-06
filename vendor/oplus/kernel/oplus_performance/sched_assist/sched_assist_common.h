@@ -179,6 +179,17 @@ extern void oplus_boost_kill_signal(int sig, struct task_struct *cur,
 		struct task_struct *task);
 extern void cgroup_set_sched_assist_boost_task(struct task_struct *p);
 extern bool test_task_identify_ux(struct task_struct *task, int id_type_ux);
+#ifdef CONFIG_OPLUS_FEATURE_AUDIO_OPT
+extern void sched_assist_update_record(struct task_struct *task, u64 delta_ns,
+		int stats_type);
+extern bool sched_assist_pick_next_entity(struct cfs_rq *cfs_rq,
+		struct sched_entity **se);
+
+static inline bool is_small_task(struct task_struct *task)
+{
+	return task->oplus_task_info.im_small;
+}
+#endif
 #ifdef CONFIG_SCHED_WALT
 extern bool sched_assist_task_misfit(struct task_struct *task, int cpu, int flag);
 #else

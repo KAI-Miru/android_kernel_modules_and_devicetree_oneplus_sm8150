@@ -1692,6 +1692,90 @@ static ssize_t proc_im_flag_app_read(struct file *file, char __user *buf,
 	return proc_im_flag_read_common(buf, count, ppos, true);
 }
 
+#ifdef CONFIG_OPLUS_FEATURE_AUDIO_OPT
+#define AUDIO_SMALL_MATCHES	3
+#define AUDIO_SMALL_EXEC_NS	3000000
+
+static bool audio_trace_group(struct task_struct *task)
+{
+	return READ_ONCE(save_audio_tgid) &&
+		task->tgid == READ_ONCE(save_audio_tgid);
+}
+
+bool sched_assist_pick_next_entity(struct cfs_rq *cfs_rq,
+		struct sched_entity **se)
+{
+	if (cfs_rq->next && oplus_entity_is_task(cfs_rq->next)) {
+		struct task_struct *task = task_of(cfs_rq->next);
+
+		if (task->oplus_task_info.im_small) {
+			*se = cfs_rq->next;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void audio_update_task_stat(struct task_struct *task, u64 delta_ns,
+		int stats_type)
+{
+	int i;
+
+	for (i = TASK_INFO_SAMPLE - 1; i > 0; i--)
+		task->oplus_task_info.sa_info[stats_type][i] =
+			task->oplus_task_info.sa_info[stats_type][i - 1];
+	task->oplus_task_info.sa_info[stats_type][0] = delta_ns;
+}
+
+static void audio_update_small_state(struct task_struct *task)
+{
+	int fit_small = 0;
+	int i;
+
+	if (!task->oplus_task_info.sa_info[TST_EXEC][TASK_INFO_SAMPLE - 1] ||
+		!task->oplus_task_info.sa_info[TST_SLEEP][TASK_INFO_SAMPLE - 1])
+		goto not_small;
+
+	for (i = 0; i < TASK_INFO_SAMPLE; i++) {
+		if (task->oplus_task_info.sa_info[TST_EXEC][i] <
+				AUDIO_SMALL_EXEC_NS &&
+			task->oplus_task_info.sa_info[TST_EXEC][i] * 5 <
+				task->oplus_task_info.sa_info[TST_SLEEP][i])
+			fit_small++;
+	}
+
+	if (fit_small >= AUDIO_SMALL_MATCHES) {
+		task->oplus_task_info.im_small = true;
+		return;
+	}
+
+not_small:
+	task->oplus_task_info.im_small = false;
+}
+
+void sched_assist_update_record(struct task_struct *task, u64 delta_ns,
+		int stats_type)
+{
+	if (!task || !READ_ONCE(sysctl_sched_assist_enabled))
+		return;
+	if (stats_type < 0 || stats_type >= TST_SCHED_TYPE_TATOL)
+		return;
+
+	if (task->oplus_task_info.im_small &&
+		(!audio_trace_group(task) || !sched_assist_scene(SA_CAMERA))) {
+		memset(&task->oplus_task_info, 0, sizeof(struct task_info));
+		return;
+	}
+
+	if (!sched_assist_scene(SA_CAMERA) || !audio_trace_group(task))
+		return;
+
+	audio_update_task_stat(task, delta_ns, stats_type);
+	audio_update_small_state(task);
+}
+#endif /* CONFIG_OPLUS_FEATURE_AUDIO_OPT */
+
 static const struct file_operations proc_debug_enabled_fops = {
 	.read = proc_debug_enabled_read,
 	.write = proc_debug_enabled_write,

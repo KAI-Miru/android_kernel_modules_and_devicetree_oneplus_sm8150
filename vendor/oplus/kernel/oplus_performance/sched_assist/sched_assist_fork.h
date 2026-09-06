@@ -21,5 +21,8 @@ static inline void init_task_ux_info(struct task_struct *p)
 	p->get_mmlock = 0;
 	p->get_mmlock_ts = 0;
 #endif
+#ifdef CONFIG_OPLUS_FEATURE_AUDIO_OPT
+	memset(&p->oplus_task_info, 0, sizeof(struct task_info));
+#endif
 }
 #endif
