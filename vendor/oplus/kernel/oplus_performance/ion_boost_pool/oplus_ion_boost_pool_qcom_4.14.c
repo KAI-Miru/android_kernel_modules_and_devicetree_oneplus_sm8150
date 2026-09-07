@@ -235,7 +235,7 @@ struct page_info *boost_pool_allocate(struct ion_boost_pool *pool,
 		if (!info)
 			info = kmem_cache_zalloc(boost_ion_info_cachep, GFP_KERNEL);
 		if (unlikely(!info))
-			return ERR_PTR(-ENOMEM);
+			return NULL;
 		info->from_boost_kmem_cache = true;
 	} else {
 		info = kmalloc(sizeof(*info), GFP_KERNEL);
@@ -340,8 +340,9 @@ int boost_pool_shrink(struct ion_boost_pool *boost_pool,
 		return 0;
 	}
 
-	if (boost_pool->tsk->pid == current->pid ||
-	    boost_pool->prefill_tsk->pid == current->pid)
+	if ((boost_pool->tsk && boost_pool->tsk->pid == current->pid) ||
+	    (boost_pool->prefill_tsk &&
+	     boost_pool->prefill_tsk->pid == current->pid))
 		return 0;
 
 	if (nr_to_scan == 0)
