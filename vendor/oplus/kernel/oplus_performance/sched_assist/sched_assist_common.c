@@ -57,7 +57,7 @@ static DEFINE_PER_CPU(int, prev_ux_priority);
  */
 static inline bool ux_priority_boot_ready(void)
 {
-	return likely(READ_ONCE(system_state) >= SYSTEM_SCHEDULING);
+	return likely(READ_ONCE(system_state) == SYSTEM_RUNNING);
 }
 #endif
 
