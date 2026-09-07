@@ -19,6 +19,7 @@
 #include <linux/trace_events.h>
 #include <linux/rwsem.h>
 #include <linux/mutex.h>
+#include <linux/kernel.h>
 
 #include "sched_assist_common.h"
 #include "sched_assist_audio.h"
@@ -48,6 +49,16 @@ static pid_t save_top_app_tgid;
 static unsigned int top_app_type;
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
 static DEFINE_PER_CPU(int, prev_ux_priority);
+
+/*
+ * The SM8150 4.14 scheduler can enqueue bootstrap tasks before the normal
+ * scheduling phase is established. Keep the donor ordered-UX policy armed,
+ * but do not touch its auxiliary lists during that early window.
+ */
+static inline bool ux_priority_boot_ready(void)
+{
+	return likely(READ_ONCE(system_state) >= SYSTEM_SCHEDULING);
+}
 #endif
 
 #define S2NS_T 1000000
@@ -2009,6 +2020,8 @@ void enqueue_ux_thread_to_list(struct rq *rq, struct task_struct *p)
 {
 	unsigned long irqflag;
 
+	if (unlikely(!ux_priority_boot_ready()))
+		return;
 	if (unlikely(!sysctl_sched_assist_enabled))
 		return;
 	if (!rq || !p || !list_empty(&p->ux_entry))
@@ -2037,6 +2050,8 @@ void dequeue_ux_thread_from_list(struct rq *rq, struct task_struct *p)
 {
 	unsigned long irqflag;
 
+	if (unlikely(!ux_priority_boot_ready()))
+		return;
 	if (!rq || !p)
 		return;
 
@@ -2101,6 +2116,8 @@ void oplus_check_preempt_wakeup_in_list(struct rq *rq,
 	bool wake_ux;
 	bool curr_ux;
 
+	if (unlikely(!ux_priority_boot_ready()))
+		return;
 	if (!sysctl_sched_assist_enabled)
 		return;
 
@@ -2134,6 +2151,8 @@ void android_vh_scheduler_tick_handler(struct rq *rq)
 	struct rq_flags rf;
 	unsigned long irqflag;
 
+	if (unlikely(!ux_priority_boot_ready()))
+		return;
 	if (list_empty(&rq->curr->ux_entry))
 		return;
 
@@ -2152,6 +2171,8 @@ static void oplus_replace_next_task_fair(struct rq *rq,
 	struct list_head *n;
 	unsigned long irqflag;
 
+	if (unlikely(!ux_priority_boot_ready()))
+		return;
 	if (unlikely(!sysctl_sched_assist_enabled))
 		return;
 
@@ -2192,6 +2213,10 @@ void oplus_set_ux_state_lock(struct task_struct *t, int ux_state,
 	struct rq_flags flags;
 	unsigned long irqflag;
 
+	if (unlikely(!ux_priority_boot_ready())) {
+		WRITE_ONCE(t->ux_state, ux_state);
+		return;
+	}
 	if (need_lock_rq)
 		rq = task_rq_lock(t, &flags);
 	else
