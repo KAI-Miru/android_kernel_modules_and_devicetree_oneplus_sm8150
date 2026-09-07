@@ -124,9 +124,12 @@ static int boost_pool_kworkthread(void *p)
 
 	pool = (struct ion_boost_pool *)p;
 
-	while (true) {
+	while (!kthread_should_stop()) {
 		ret = wait_event_interruptible(pool->waitq,
-					       (pool->wait_flag == 1));
+					       pool->wait_flag == 1 ||
+					       kthread_should_stop());
+		if (kthread_should_stop())
+			break;
 		if (ret < 0)
 			continue;
 
@@ -162,9 +165,12 @@ static int boost_prefill_kworkthread(void *p)
 	}
 
 	pool = (struct ion_boost_pool *)p;
-	while (true) {
+	while (!kthread_should_stop()) {
 		ret = wait_event_interruptible(pool->prefill_waitq,
-					       (pool->prefill_wait_flag == 1));
+					       pool->prefill_wait_flag == 1 ||
+					       kthread_should_stop());
+		if (kthread_should_stop())
+			break;
 		if (ret < 0)
 			continue;
 
@@ -254,7 +260,10 @@ struct page_info *boost_pool_allocate(struct ion_boost_pool *pool,
 		INIT_LIST_HEAD(&info->list);
 		return info;
 	}
-	kfree(info);
+	if (info->from_boost_kmem_cache)
+		kmem_cache_free(boost_ion_info_cachep, info);
+	else
+		kfree(info);
 
 	return NULL;
 }
@@ -649,13 +658,16 @@ struct ion_boost_pool *boost_pool_create(struct ion_system_heap *heap,
 			  "bp_prefill_%s", name);
 	if (IS_ERR_OR_NULL(tsk)) {
 		pr_err("%s: kthread_create failed!\n", __func__);
-		goto destroy_proc_stat;
+		goto stop_worker;
 	}
 	boost_pool->prefill_tsk = tsk;
 
 	boost_pool_wakeup_process(boost_pool);
 	return boost_pool;
 
+stop_worker:
+	kthread_stop(boost_pool->tsk);
+	boost_pool->tsk = NULL;
 destroy_proc_stat:
 	proc_remove(boost_pool->proc_stat);
 destroy_proc_low_info:
