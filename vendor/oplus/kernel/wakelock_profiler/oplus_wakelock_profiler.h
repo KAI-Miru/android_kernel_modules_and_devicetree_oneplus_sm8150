@@ -78,6 +78,7 @@
 #define TRINKET 3
 #define LAHAINA 4
 #define LAGOON 7
+#define SM8150 8
 
 #define PLATFORM_KONA "kona"
 #define PLATFORM_LITO "lito"
@@ -85,6 +86,7 @@
 #define PLATFORM_LAHAINA "lahaina"
 #define PLATFORM_YUPIK "yupik"
 #define PLATFORM_LAGOON "lagoon"
+#define PLATFORM_SM8150 "qcom,sm8150"
 
 struct ws_desc_t {
 	int prop;

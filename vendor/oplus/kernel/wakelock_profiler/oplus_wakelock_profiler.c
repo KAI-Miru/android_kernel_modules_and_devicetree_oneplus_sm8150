@@ -11,6 +11,7 @@
 #include "qcom_platform_lahaina.h"
 #include "qcom_platform_trinket.h"
 #include "qcom_platform_lagoon.h"
+#include "qcom_platform_sm8150.h"
 
 static int platform_id;
 static struct wakeup_count_desc_t **comm_all_modules;
@@ -62,6 +63,11 @@ static int get_platform(void)
 		comm_all_modules = (struct wakeup_count_desc_t **)all_modules_lahaina;
 		modem_report_exchange = modem_report_exchange_lahaina;
 		pr_info("platform is %s\n", PLATFORM_LAHAINA);
+	} else if (strstr(comp_str, PLATFORM_SM8150)) {
+		platform_id = SM8150;
+		comm_all_modules = (struct wakeup_count_desc_t **)all_modules_sm8150;
+		modem_report_exchange = modem_report_exchange_sm8150;
+		pr_info("platform is %s\n", PLATFORM_SM8150);
 	} else {
 		platform_id = 0;
 		comm_all_modules = NULL;
@@ -93,7 +99,7 @@ int wakeup_reasons_statics(const char *irq_name, int choose_flag)
 	if (irq_name == NULL) {
 		return false;
 	}
-	pr_info("Enter: %s, irq_name=%s, choose_flag=0x%x", __func__,
+	pr_debug("Enter: %s, irq_name=%s, choose_flag=0x%x", __func__,
 		irq_name, choose_flag);
 
 	for (i = 0; (desc = comm_all_modules[i]) != NULL; i++) {
