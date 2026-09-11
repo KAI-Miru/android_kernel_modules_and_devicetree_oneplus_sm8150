@@ -1,0 +1,6 @@
+config OPLUS_SUBSYS_SLEEP_MONITOR
+	tristate "Qualcomm subsystem sleep monitor"
+	default n
+	help
+	  Export the Qualcomm ADSP, CDSP and SLPI low-power voting records
+	  used by the ColorOS subsystem low-power parser.
