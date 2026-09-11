@@ -25,14 +25,22 @@
 
 struct sleepmon_node {
 	unsigned int pid;
+	char *master_name;
 	bool compact;
 };
 
 struct sleepmon_snapshot {
 	struct subsys_lprinfo lpr;
 	struct subsys_sleepmon voters;
+	char *master_name;
+	u64 rpmh_sleep_ms;
+	int voter_smem_error;
+	bool rpmh_fallback;
 	bool compact;
 };
+
+/* Exported by the SM8150 RPMh master-stat driver in the matching kernel. */
+extern int oplus_subsystem_sleeptime(char *name, u64 *sleeptime);
 
 static struct proc_dir_entry *subsys_proc;
 
@@ -42,12 +50,12 @@ static const char * const modechosen_reason[] = {
 };
 
 static struct sleepmon_node nodes[] = {
-	{ SLEEPMONITOR_SMEM_ADSP_PID, false },
-	{ SLEEPMONITOR_SMEM_ADSP_PID, true },
-	{ SLEEPMONITOR_SMEM_CDSP_PID, false },
-	{ SLEEPMONITOR_SMEM_CDSP_PID, true },
-	{ SLEEPMONITOR_SMEM_SSC_PID, false },
-	{ SLEEPMONITOR_SMEM_SSC_PID, true },
+	{ SLEEPMONITOR_SMEM_ADSP_PID, "ADSP", false },
+	{ SLEEPMONITOR_SMEM_ADSP_PID, "ADSP", true },
+	{ SLEEPMONITOR_SMEM_CDSP_PID, "CDSP", false },
+	{ SLEEPMONITOR_SMEM_CDSP_PID, "CDSP", true },
+	{ SLEEPMONITOR_SMEM_SSC_PID, "SLPI", false },
+	{ SLEEPMONITOR_SMEM_SSC_PID, "SLPI", true },
 };
 
 static const char * const node_names[] = {
@@ -341,6 +349,37 @@ static int sleepmon_show(struct seq_file *seq, void *unused)
 {
 	const struct sleepmon_snapshot *snap = seq->private;
 
+	if (snap->rpmh_fallback) {
+		/*
+		 * H.40 does not publish the 9R per-voter SMEM records.  Keep the
+		 * ColorOS compact parser readable without inventing blockers: its
+		 * five recognised fields are deliberately empty, while the honest
+		 * RPMh accumulated sleep value is available to diagnostics.
+		 */
+		if (snap->compact) {
+			seq_puts(seq, "sleep_mode_reason=\n");
+			seq_puts(seq, "clocks=\n");
+			seq_puts(seq, "active_thread=\n");
+			seq_puts(seq, "latency_normal=\n");
+			seq_puts(seq, "resource=\n");
+			seq_puts(seq, "source=rpmh_master_stats\n");
+			seq_printf(seq, "master=%s\n", snap->master_name);
+			seq_printf(seq, "sleep_time_ms=%llu\n",
+				   (unsigned long long)snap->rpmh_sleep_ms);
+			seq_printf(seq, "voter_smem_error=%d\n",
+				   snap->voter_smem_error);
+		} else {
+			seq_printf(seq, "Subsystem: %s\n", snap->master_name);
+			seq_puts(seq, "Source: RPMh master statistics (H.40 fallback)\n");
+			seq_printf(seq, "Accumulated sleep: %llu ms\n",
+				   (unsigned long long)snap->rpmh_sleep_ms);
+			seq_printf(seq, "9R voter SMEM unavailable: %d\n",
+				   snap->voter_smem_error);
+			seq_puts(seq, "Per-client blocker data is not published by this firmware.\n");
+		}
+		return 0;
+	}
+
 	print_mode(seq, snap);
 	if (!snap->compact)
 		seq_puts(seq, "Details below:\n\n");
@@ -362,10 +401,16 @@ static int sleepmon_open(struct inode *inode, struct file *file)
 	if (!snap)
 		return -ENOMEM;
 	snap->compact = node->compact;
+	snap->master_name = node->master_name;
 	ret = snapshot_smem(snap, node->pid);
 	if (ret) {
-		kfree(snap);
-		return ret;
+		snap->voter_smem_error = ret;
+		if (!oplus_subsystem_sleeptime(node->master_name,
+						 &snap->rpmh_sleep_ms)) {
+			kfree(snap);
+			return ret;
+		}
+		snap->rpmh_fallback = true;
 	}
 	ret = single_open(file, sleepmon_show, snap);
 	if (ret)
