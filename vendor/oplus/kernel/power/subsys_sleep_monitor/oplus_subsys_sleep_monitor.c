@@ -13,6 +13,7 @@
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
+#include <linux/ratelimit.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/smem.h>
